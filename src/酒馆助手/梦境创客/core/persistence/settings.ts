@@ -1,13 +1,13 @@
+import { cloneStructuredPreset, DEFAULT_PRESET, type StructuredPreset } from '../preset/compiler';
 import {
   findSelectedModel,
   normalizeApiProvider,
   type ApiProvider,
   type ModelSelection,
 } from '../provider/provider-config';
-import { cloneStructuredPreset, DEFAULT_PRESET, type StructuredPreset } from '../preset/compiler';
-import { DEFAULT_BUILTIN_AGENT, defaultBuiltinAgentConfiguration, type AgentConfiguration } from './builtin-agent';
-import type { SessionMode } from '../session/types';
 import { isAgentToolId } from '../runner/tool-catalog';
+import type { SessionMode } from '../session/types';
+import { DEFAULT_BUILTIN_AGENT, defaultBuiltinAgentConfiguration, type AgentConfiguration } from './builtin-agent';
 
 export type { AgentConfiguration } from './builtin-agent';
 
@@ -131,6 +131,7 @@ export type DreamCardAgentSettings = {
   compressImages: boolean;
   developerMode: boolean;
   dangerousNonCharacterResourceWrites: boolean;
+  maxModelSteps: number;
   files: Record<string, StoredFileReference>;
   floatingButton: boolean;
   floatingButtonAnchor: FloatingButtonAnchor;
@@ -148,6 +149,17 @@ export type DreamCardAgentSettings = {
 
 export const DEFAULT_AGENT_CONFIGURATION_ID = DEFAULT_BUILTIN_AGENT.id;
 
+/** 单次任务默认允许的模型步骤上限；设为0表示不限制。 */
+export const DEFAULT_MAX_MODEL_STEPS = 64;
+
+/** 空值、0或非法输入一律视为不限制单次任务的模型步骤数。 */
+export function normalizeMaxModelSteps(value: unknown): number {
+  if (value === undefined || value === null || value === '') return DEFAULT_MAX_MODEL_STEPS;
+  const parsed = typeof value === 'number' ? value : Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+  return Math.floor(parsed);
+}
+
 export const DEFAULT_DREAM_CARD_AGENT_SETTINGS: DreamCardAgentSettings = {
   interfaceModes: { overlay: true, navigation: true, detached: false },
   activeThemeId: 'builtin:clean',
@@ -160,6 +172,7 @@ export const DEFAULT_DREAM_CARD_AGENT_SETTINGS: DreamCardAgentSettings = {
   compressImages: true,
   developerMode: false,
   dangerousNonCharacterResourceWrites: false,
+  maxModelSteps: DEFAULT_MAX_MODEL_STEPS,
   files: {},
   floatingButton: true,
   floatingButtonAnchor: 'middle-right',
@@ -295,6 +308,7 @@ export function normalizeSettings(raw?: Partial<DreamCardAgentSettings>): DreamC
         : DEFAULT_DREAM_CARD_AGENT_SETTINGS.activeThemeId,
     compressImages: raw?.compressImages !== false,
     dangerousNonCharacterResourceWrites: raw?.dangerousNonCharacterResourceWrites === true,
+    maxModelSteps: normalizeMaxModelSteps(raw?.maxModelSteps),
     files: structuredClone(raw?.files ?? {}),
     activeAgentConfigurationId,
     activePresetId,
@@ -354,6 +368,7 @@ export function mergeSettingsChanges(
     compressImages: choose('compressImages'),
     developerMode: choose('developerMode'),
     dangerousNonCharacterResourceWrites: choose('dangerousNonCharacterResourceWrites'),
+    maxModelSteps: choose('maxModelSteps'),
     files: applyRecordChanges(base.files, incoming.files, latest.files),
     floatingButton: choose('floatingButton'),
     floatingButtonAnchor: choose('floatingButtonAnchor'),

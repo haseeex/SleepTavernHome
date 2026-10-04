@@ -1,27 +1,23 @@
+import { klona } from 'klona';
+import { materializeCardWorkspace, projectCardWorkspace } from '../core/mapping/card-workspace-mapper';
+import type { CardWorkspaceState } from '../core/mapping/types';
+import { IndexedDbOperationRecoveryStore } from '../core/operations/recovery-store';
 import {
   browserAccountNamespace,
   IndexedDbBrowserRecordStore,
   type BrowserRecordStore,
 } from '../core/persistence/browser-record-store';
 import { BufferedSessionRecordStore } from '../core/persistence/buffered-session-record-store';
-import { LocalSessionStore, type SessionBackupStatus } from '../core/persistence/local-session-store';
-import { klona } from 'klona';
-import { IndexedDbOperationRecoveryStore } from '../core/operations/recovery-store';
-import { materializeCardWorkspace, projectCardWorkspace } from '../core/mapping/card-workspace-mapper';
-import type { CardWorkspaceState } from '../core/mapping/types';
-import { GlobalTavernFileClient, type TavernFileClient } from '../core/persistence/file-client';
-import {
-  DreamCreatorWorkspaceFileStore,
-  GLOBAL_WORKSPACE_BINDING_ID,
-  type CharacterFileStorageSummary,
-} from '../core/persistence/workspace-file-store';
 import { CharacterMetadataStore } from '../core/persistence/character-store';
 import { PageDebugLog, type DebugLogEntry } from '../core/persistence/debug-log';
+import { GlobalTavernFileClient, type TavernFileClient } from '../core/persistence/file-client';
 import { FileRegistryGarbageCollector } from '../core/persistence/garbage-collector';
+import { LocalSessionStore, type SessionBackupStatus } from '../core/persistence/local-session-store';
 import { SessionPersistenceCoordinator } from '../core/persistence/session-persistence';
 import { SessionRevisionStore } from '../core/persistence/session-store';
 import {
   DEFAULT_AGENT_CONFIGURATION_ID,
+  normalizeMaxModelSteps,
   TavernAgentSettingsStore,
   type AgentConfiguration,
   type AgentSettingsStore,
@@ -30,7 +26,13 @@ import {
   type FloatingButtonOffset,
   type SessionIndexEntry,
 } from '../core/persistence/settings';
+import {
+  DreamCreatorWorkspaceFileStore,
+  GLOBAL_WORKSPACE_BINDING_ID,
+  type CharacterFileStorageSummary,
+} from '../core/persistence/workspace-file-store';
 import { cloneStructuredPreset, compilePreset, DEFAULT_PRESET, type StructuredPreset } from '../core/preset/compiler';
+import { HtmlProjectCompiler, type HtmlProjectCheck } from '../core/projects/html-project';
 import { builtinModelTemplates, DEFAULT_CONTEXT_WINDOW, matchModelTemplates } from '../core/provider/model-catalog';
 import {
   createApiModel,
@@ -50,16 +52,18 @@ import {
   type ModelSelection,
 } from '../core/provider/provider-config';
 import { normalizeProviderFailure } from '../core/provider/provider-failure';
+import { measureContext } from '../core/runner/context';
 import {
   ProviderModelStepExecutor,
   UnavailableModelStepExecutor,
   type ModelStepExecutor,
 } from '../core/runner/step-executor';
-import { measureContext } from '../core/runner/context';
-import { HtmlProjectCompiler, type HtmlProjectCheck } from '../core/projects/html-project';
+import { isAgentToolId } from '../core/runner/tool-catalog';
 import type { ToolConfirmation } from '../core/runner/tools';
-import { CardAgentSessionService } from '../core/session/session-service';
+import { ExternalSessionAttachmentStore } from '../core/session/attachment-store';
+import type { SessionAttachmentInput } from '../core/session/attachments';
 import { defaultPresetValues } from '../core/session/prompt';
+import { CardAgentSessionService } from '../core/session/session-service';
 import { GlobalAgentTaskLock } from '../core/session/task-lock';
 import type {
   PersistedSessionRuntime,
@@ -68,22 +72,19 @@ import type {
   SessionModelControls,
   SessionView,
 } from '../core/session/types';
-import type { SessionAttachmentInput } from '../core/session/attachments';
-import { ExternalSessionAttachmentStore } from '../core/session/attachment-store';
-import { GlobalSkillStore } from '../core/skills/global-skill-store';
-import { RemoteBuiltinSkillStore, type RemoteBuiltinSkillStatus } from '../core/skills/remote-builtin-store';
-import { REMOTE_BUILTIN_SKILL_IDS } from '../core/skills/remote-builtin-catalog';
-import type { AgentSkill } from '../core/skills/types';
 import { BUILTIN_CARD_WORKSPACE_SKILL } from '../core/skills/builtin-card-workspace';
-import { isAgentToolId } from '../core/runner/tool-catalog';
+import { GlobalSkillStore } from '../core/skills/global-skill-store';
+import { REMOTE_BUILTIN_SKILL_IDS } from '../core/skills/remote-builtin-catalog';
+import { RemoteBuiltinSkillStore, type RemoteBuiltinSkillStatus } from '../core/skills/remote-builtin-store';
+import type { AgentSkill } from '../core/skills/types';
 import { createGlobalTavernBridge, type TavernBridge } from '../core/tavern/bridge';
 import { createGlobalTavernChatBridge, type TavernChatBridge } from '../core/tavern/chat-bridge';
-import { ProductionCardStateAdapter } from '../core/tavern/production-adapter';
 import {
   GLOBAL_SESSION_BINDING_ID,
   readCharacterTavernState,
   readGlobalTavernState,
 } from '../core/tavern/global-state-reader';
+import { ProductionCardStateAdapter } from '../core/tavern/production-adapter';
 import type { CardStateAdapter } from '../core/transaction/adapter';
 import { applyRealtimeStateOperations } from '../core/transaction/realtime-apply';
 import { diffCardStates } from '../core/transaction/state-diff';
@@ -108,6 +109,7 @@ export type DreamCardAgentRuntimeState = {
   debugLogs: DebugLogEntry[];
   developerMode: boolean;
   dangerousNonCharacterResourceWrites: boolean;
+  maxModelSteps: number;
   error?: string;
   floatingButton: boolean;
   floatingButtonAnchor: FloatingButtonAnchor;
@@ -311,6 +313,7 @@ export class DreamCardAgentRuntime {
       debugLogs: [],
       developerMode: settings.developerMode,
       dangerousNonCharacterResourceWrites: settings.dangerousNonCharacterResourceWrites,
+      maxModelSteps: settings.maxModelSteps,
       floatingButton: settings.floatingButton,
       floatingButtonAnchor: settings.floatingButtonAnchor,
       floatingButtonOffset: settings.floatingButtonOffset,
@@ -560,6 +563,7 @@ export class DreamCardAgentRuntime {
           : new UnavailableModelStepExecutor(),
         contextWindow: resolvedModel ? this.modelContextWindow(resolvedModel.model) : DEFAULT_CONTEXT_WINDOW,
         lock: this.lock,
+        maxModelSteps: this.state.maxModelSteps,
         mode: input.mode ?? this.state.approvalMode,
         modelSelection,
         mountedWorldbooks,
@@ -666,6 +670,7 @@ export class DreamCardAgentRuntime {
             : new UnavailableModelStepExecutor(),
           contextWindow: resolvedModel ? this.modelContextWindow(resolvedModel.model) : DEFAULT_CONTEXT_WINDOW,
           lock: this.lock,
+          maxModelSteps: this.state.maxModelSteps,
           mountedWorldbooks,
           onCharacterChanged:
             scope === 'global'
@@ -779,6 +784,7 @@ export class DreamCardAgentRuntime {
             : new UnavailableModelStepExecutor(),
           contextWindow: resolvedModel ? this.modelContextWindow(resolvedModel.model) : DEFAULT_CONTEXT_WINDOW,
           lock: this.lock,
+          maxModelSteps: this.state.maxModelSteps,
           mountedWorldbooks,
           now: this.now,
           canWriteNonCharacterResources: () => this.canWriteNonCharacterResources(),
@@ -860,6 +866,7 @@ export class DreamCardAgentRuntime {
             : new UnavailableModelStepExecutor(),
           contextWindow: resolvedModel ? this.modelContextWindow(resolvedModel.model) : DEFAULT_CONTEXT_WINDOW,
           lock: this.lock,
+          maxModelSteps: this.state.maxModelSteps,
           mountedWorldbooks,
           onCharacterChanged: async () => {
             if (this.bridge.getCurrentCharacterId()) {
@@ -1672,6 +1679,7 @@ export class DreamCardAgentRuntime {
     floatingButton?: boolean;
     floatingButtonAnchor?: FloatingButtonAnchor;
     floatingButtonOffset?: FloatingButtonOffset;
+    maxModelSteps?: number;
     onboardingDone?: boolean;
     sendWithCtrlEnter?: boolean;
   }): Promise<void> {
@@ -1685,6 +1693,7 @@ export class DreamCardAgentRuntime {
       floatingButton: this.state.floatingButton,
       floatingButtonAnchor: this.state.floatingButtonAnchor,
       floatingButtonOffset: klona(this.state.floatingButtonOffset),
+      maxModelSteps: this.state.maxModelSteps,
       onboardingDone: this.state.onboardingDone,
       sendWithCtrlEnter: this.state.sendWithCtrlEnter,
     };
@@ -1694,6 +1703,7 @@ export class DreamCardAgentRuntime {
       settings.dangerousNonCharacterResourceWrites = input.dangerousNonCharacterResourceWrites;
     }
     if (input.developerMode !== undefined) settings.developerMode = input.developerMode;
+    if (input.maxModelSteps !== undefined) settings.maxModelSteps = normalizeMaxModelSteps(input.maxModelSteps);
     if (input.interfaceModes) {
       if (!input.interfaceModes.overlay && !input.interfaceModes.navigation && !input.interfaceModes.detached)
         throw new Error('请至少保留一种界面打开方式。');
@@ -2119,6 +2129,7 @@ export class DreamCardAgentRuntime {
     compressImages: boolean;
     dangerousNonCharacterResourceWrites: boolean;
     developerMode: boolean;
+    maxModelSteps: number;
     floatingButton: boolean;
     floatingButtonAnchor: FloatingButtonAnchor;
     floatingButtonOffset: FloatingButtonOffset;
@@ -2129,6 +2140,7 @@ export class DreamCardAgentRuntime {
     this.state.compressImages = settings.compressImages;
     this.state.dangerousNonCharacterResourceWrites = settings.dangerousNonCharacterResourceWrites;
     this.state.developerMode = settings.developerMode;
+    this.state.maxModelSteps = settings.maxModelSteps;
     this.state.interfaceModes = klona(settings.interfaceModes);
     this.state.floatingButton = settings.floatingButton;
     this.state.floatingButtonAnchor = settings.floatingButtonAnchor;
@@ -2327,6 +2339,7 @@ export class DreamCardAgentRuntime {
     this.state.compressImages = settings.compressImages;
     this.state.developerMode = settings.developerMode;
     this.state.dangerousNonCharacterResourceWrites = settings.dangerousNonCharacterResourceWrites;
+    this.state.maxModelSteps = settings.maxModelSteps;
     this.state.floatingButton = settings.floatingButton;
     this.state.floatingButtonAnchor = settings.floatingButtonAnchor;
     this.state.floatingButtonOffset = settings.floatingButtonOffset;
@@ -2334,6 +2347,8 @@ export class DreamCardAgentRuntime {
     this.state.providers = settings.providers;
     this.state.presetProfiles = settings.presetProfiles;
     this.state.sendWithCtrlEnter = settings.sendWithCtrlEnter;
+    // 已加载会话按最新步骤上限启动下一次任务，跨窗口设置变更也能生效。
+    this.applyMaxModelStepsToServices(settings.maxModelSteps);
     this.state.storage.globalSkillBytes = Object.values(settings.files)
       .filter(file => file.bindingId === 'global')
       .reduce((total, file) => total + file.size, 0);
@@ -2343,6 +2358,11 @@ export class DreamCardAgentRuntime {
 
   private canWriteNonCharacterResources(): boolean {
     return this.state.dangerousNonCharacterResourceWrites;
+  }
+
+  /** 已加载会话在下一次启动任务前生效即可，无需重建Runner。 */
+  private applyMaxModelStepsToServices(value: number): void {
+    for (const service of this.services.values()) service.setMaxModelSteps(value);
   }
 
   private async run(action: () => Promise<void>): Promise<DreamCardAgentRuntimeState> {

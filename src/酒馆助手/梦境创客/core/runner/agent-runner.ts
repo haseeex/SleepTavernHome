@@ -1,8 +1,9 @@
 import type { ModelMessage, UserContent } from 'ai';
 import { boundedWait } from '../async';
+import { isSameOrDescendant, normalizeWorkspacePath } from '../workspace/path';
 import {
-  decideContext,
   compactModelMessages,
+  decideContext,
   measureContext,
   type ApiUsageBaseline,
   type ContextUsage,
@@ -14,9 +15,8 @@ import type {
   RunnerToolInputDelta,
   RunnerToolInputStart,
 } from './step-executor';
-import { COMPACT_CONTEXT_TOOL, type RunnerTool, type ToolConfirmation } from './tools';
 import { isRichToolOutput, type ToolResultOutput } from './tool-output';
-import { isSameOrDescendant, normalizeWorkspacePath } from '../workspace/path';
+import { COMPACT_CONTEXT_TOOL, type RunnerTool, type ToolConfirmation } from './tools';
 
 export type RunnerStatus =
   'completed' | 'context-exhausted' | 'failed' | 'idle' | 'running' | 'stopped' | 'waiting-approval';
@@ -69,6 +69,8 @@ export type AgentRunnerOptions = {
   initialPending?: PendingRunnerStep;
   initialStatus?: RunnerStatus;
   journal: RunnerJournal;
+  /** 单次任务的模型步骤上限；0或负数表示不限制，缺省回退到默认值。 */
+  maxModelSteps?: number;
   modelControls?: ModelRequestControls;
   now?: () => number;
   onReasoningDelta?: (delta: string) => void;
@@ -143,6 +145,16 @@ function mayDependOn(call: RunnerToolCall, failed: RunnerToolCall): boolean {
   return paths.some(path => failedPaths.some(previous => isSameOrDescendant(path, previous) || isSameOrDescendant(previous, path)));
 }
 
+/** 单次任务默认的模型步骤上限，避免失控循环。 */
+export const DEFAULT_MAX_MODEL_STEPS = 64;
+
+/** 空值、0或非法输入一律视为不限制单次任务的模型步骤数。 */
+function normalizeMaxModelSteps(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_MAX_MODEL_STEPS;
+  if (!Number.isFinite(value) || value <= 0) return 0;
+  return Math.floor(value);
+}
+
 export class AgentRunner {
   private apiUsageBaseline?: ApiUsageBaseline;
   private readonly contextWindow: number;
@@ -155,6 +167,7 @@ export class AgentRunner {
   private readonly executor: ModelStepExecutor;
   private headerMessageCount: number;
   private readonly journal: RunnerJournal;
+  private readonly maxModelSteps: number;
   private readonly modelControls: ModelRequestControls;
   private providerWebSearchCount = 0;
   private readonly now: () => number;
@@ -191,6 +204,7 @@ export class AgentRunner {
         ),
     };
     this.modelControls = options.modelControls ?? { reasoningEffort: 'auto', webSearch: false };
+    this.maxModelSteps = normalizeMaxModelSteps(options.maxModelSteps);
     this.now = options.now ?? Date.now;
     this.onReasoningDelta = options.onReasoningDelta;
     this.onTextDelta = options.onTextDelta;
@@ -295,7 +309,7 @@ export class AgentRunner {
     this.state.failure = undefined;
     await this.setStatus('running');
     let modelSteps = 0;
-    while (modelSteps < 64) {
+    while (this.maxModelSteps === 0 || modelSteps < this.maxModelSteps) {
       if (this.stopRequested) return this.finishStopped();
       if (this.state.pending) {
         const completed = await this.executePending();
@@ -430,7 +444,7 @@ export class AgentRunner {
       await this.setStatus('completed');
       return this.state;
     }
-    this.state.failure = '单次任务超过64个模型步骤，已暂停以避免失控循环。';
+    this.state.failure = `单次任务超过${this.maxModelSteps}个模型步骤，已暂停以避免失控循环。`;
     await this.setStatus('failed');
     return this.state;
   }

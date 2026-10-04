@@ -1,30 +1,8 @@
+import type { ModelMessage } from 'ai';
 import { klona } from 'klona';
 import { boundedWait } from '../async';
-import type { ModelMessage } from 'ai';
 import { projectCardWorkspace } from '../mapping/card-workspace-mapper';
-import { personaWorkspacePath } from '../workspace/persona-path';
 import type { CardWorkspaceState } from '../mapping/types';
-import { compilePreset, DEFAULT_PRESET, type CompiledPreset, type StructuredPreset } from '../preset/compiler';
-import { PersistentRunnerJournal } from '../persistence/journal';
-import { DreamCreatorWorkspaceFileStore } from '../persistence/workspace-file-store';
-import { AgentRunner, type PendingRunnerStep, type RunnerEvent, type RunnerStatus } from '../runner/agent-runner';
-import { measureContext, type ApiUsageBaseline } from '../runner/context';
-import { recoverPendingRunnerStep } from '../runner/recovery';
-import type {
-  ModelStepExecutor,
-  RunnerToolCall,
-  RunnerToolInputDelta,
-  RunnerToolInputStart,
-} from '../runner/step-executor';
-import { createWorkspaceRunnerTools, type ToolConfirmation } from '../runner/tools';
-import { createTavernChatRunnerTools } from '../runner/tavern-chat-tools';
-import { createWorldbookRunnerTools } from '../runner/worldbook-tools';
-import { createProjectRunnerTools } from '../runner/project-tools';
-import { createPlaygroundRunnerTools, type PreparedRender } from '../runner/playground-tools';
-import { isAgentToolId } from '../runner/tool-catalog';
-import { createCharacterRunnerTools } from '../runner/character-tools';
-import { createPresetRunnerTools } from '../runner/preset-tools';
-import { createAvatarRunnerTools } from '../runner/avatar-tools';
 import { createWorkspaceOperationRecord } from '../operations/file-operation';
 import { WorkspaceOperationLog } from '../operations/operation-log';
 import {
@@ -34,18 +12,41 @@ import {
   type OperationReplayDirection,
 } from '../operations/operation-replayer';
 import { OperationRecoveryCoordinator, type OperationRecoveryStore } from '../operations/recovery-store';
-import type { AgentSkill } from '../skills/types';
 import type { AgentConfiguration } from '../persistence/builtin-agent';
-import type { CardStateAdapter } from '../transaction/adapter';
+import { PersistentRunnerJournal } from '../persistence/journal';
+import { DreamCreatorWorkspaceFileStore } from '../persistence/workspace-file-store';
+import { compilePreset, DEFAULT_PRESET, type CompiledPreset, type StructuredPreset } from '../preset/compiler';
+import type { ModelSelection } from '../provider/provider-config';
+import { AgentRunner, DEFAULT_MAX_MODEL_STEPS, type PendingRunnerStep, type RunnerEvent, type RunnerStatus } from '../runner/agent-runner';
+import { createAvatarRunnerTools } from '../runner/avatar-tools';
+import { createCharacterRunnerTools } from '../runner/character-tools';
+import { measureContext, type ApiUsageBaseline } from '../runner/context';
+import { createPlaygroundRunnerTools, type PreparedRender } from '../runner/playground-tools';
+import { createPresetRunnerTools } from '../runner/preset-tools';
+import { createProjectRunnerTools } from '../runner/project-tools';
+import { recoverPendingRunnerStep } from '../runner/recovery';
+import type {
+  ModelStepExecutor,
+  RunnerToolCall,
+  RunnerToolInputDelta,
+  RunnerToolInputStart,
+} from '../runner/step-executor';
+import { createTavernChatRunnerTools } from '../runner/tavern-chat-tools';
+import { isAgentToolId } from '../runner/tool-catalog';
+import { createWorkspaceRunnerTools, type ToolConfirmation } from '../runner/tools';
+import { createWorldbookRunnerTools } from '../runner/worldbook-tools';
+import type { AgentSkill } from '../skills/types';
 import type { TavernBridge } from '../tavern/bridge';
 import type { TavernChatBridge } from '../tavern/chat-bridge';
 import { TavernChatWorkspace } from '../tavern/chat-workspace';
+import type { CardStateAdapter } from '../transaction/adapter';
 import { canonicalEqual, canonicalStringify } from '../transaction/canonical';
 import { CardWorkspaceLiveSource } from '../workspace/card-live-source';
 import { LiveWorkspaceRepository } from '../workspace/live-repository';
+import { personaWorkspacePath } from '../workspace/persona-path';
+import { maskSecretsForModel } from '../workspace/secret-protection';
 import { SessionWorkspaceLiveSource } from '../workspace/session-live-source';
 import { TavernWorkspaceLiveSource } from '../workspace/tavern-workspace-source';
-import { maskSecretsForModel } from '../workspace/secret-protection';
 import type { WorkspaceFile } from '../workspace/types';
 import type { SessionAttachmentStore } from './attachment-store';
 import {
@@ -58,17 +59,16 @@ import {
 import { defaultPresetValues } from './prompt';
 import { globalAgentTaskLock, type GlobalAgentTaskLock } from './task-lock';
 import type {
-  PersistedSessionRuntime,
   ManualEditGroup,
+  PersistedSessionRuntime,
   SessionAgentConfiguration,
   SessionLifecycleStatus,
-  SessionModelControls,
   SessionMode,
+  SessionModelControls,
   SessionScope,
   SessionUiItem,
   SessionView,
 } from './types';
-import type { ModelSelection } from '../provider/provider-config';
 
 type SessionServiceOptions = {
   adapter: CardStateAdapter;
@@ -77,6 +77,7 @@ type SessionServiceOptions = {
   contextWindow?: number;
   executor: ModelStepExecutor;
   lock?: GlobalAgentTaskLock;
+  maxModelSteps?: number;
   mode?: SessionMode;
   modelSelection?: ModelSelection;
   mountedWorldbooks?: Set<string>;
@@ -194,6 +195,7 @@ export class CardAgentSessionService {
   private contextWindow: number;
   private executor: ModelStepExecutor;
   private readonly lock: GlobalAgentTaskLock;
+  private maxModelSteps: number;
   private readonly now: () => number;
   private readonly onPersist?: SessionServiceOptions['onPersist'];
   private readonly onSkillsCommit?: SessionServiceOptions['onSkillsCommit'];
@@ -265,6 +267,7 @@ export class CardAgentSessionService {
     this.executor = options.executor;
     this.headerMessageCount = restored?.runtime.headerMessageCount ?? compiled.messages.length;
     this.lock = options.lock ?? globalAgentTaskLock;
+    this.maxModelSteps = options.maxModelSteps ?? DEFAULT_MAX_MODEL_STEPS;
     this.manualEditGroup = restored?.runtime.manualEditGroup ? klona(restored.runtime.manualEditGroup) : undefined;
     this.operationLog = new WorkspaceOperationLog(restored?.runtime.operationLog);
     this.operationRecovery = new OperationRecoveryCoordinator(options.operationRecoveryStore);
@@ -581,6 +584,11 @@ export class CardAgentSessionService {
 
   setModelVisionEnabled(enabled: boolean): void {
     this.modelVisionEnabled = enabled;
+  }
+
+  /** 步骤上限只在每次启动新任务时读取，因此无需重建运行中的Runner。 */
+  setMaxModelSteps(value: number): void {
+    this.maxModelSteps = value;
   }
 
   async setSkills(skills: AgentSkill[]): Promise<void> {
@@ -1400,6 +1408,7 @@ export class CardAgentSessionService {
       initialPending,
       initialStatus,
       journal,
+      maxModelSteps: this.maxModelSteps,
       modelControls: klona(this.modelControls),
       now: this.now,
       onReasoningDelta: delta => this.appendStreamingReasoning(delta),

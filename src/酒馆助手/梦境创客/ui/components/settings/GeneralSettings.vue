@@ -56,6 +56,23 @@
         />
       </div>
       <div class="dca-toggle-row">
+        <span>
+          <strong>单次任务模型步骤上限</strong>
+          <small>超过后暂停以避免失控循环；留空或填 0 表示不限制</small>
+        </span>
+        <input
+          class="dca-steps-input"
+          type="number"
+          min="0"
+          step="1"
+          inputmode="numeric"
+          aria-label="单次任务模型步骤上限"
+          placeholder="不限制"
+          :value="maxModelStepsInput"
+          @change="updateMaxModelSteps"
+        />
+      </div>
+      <div class="dca-toggle-row">
         <span><strong>开发者模式</strong><small>显示步骤、哈希、Revision 与调试信息，不绕过保护</small></span>
         <DcaSwitch label="开发者模式" :model-value="state.developerMode" @update:model-value="toggleDeveloper" />
       </div>
@@ -78,12 +95,15 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue';
+import { computed, ref } from 'vue';
 import { useDreamCardAgent } from '../../composables/runtime';
 import DcaSwitch from '../DcaSwitch.vue';
 
 const { action, runtime, state } = useDreamCardAgent();
 const dangerConfirmation = ref(false);
+
+/** 0 视为不限制，输入框留空以保持可自由编辑。 */
+const maxModelStepsInput = computed(() => (state.value.maxModelSteps > 0 ? String(state.value.maxModelSteps) : ''));
 
 async function toggleFloating(enabled: boolean) {
   await action(() => runtime.updateSettings({ floatingButton: enabled }));
@@ -142,4 +162,24 @@ async function confirmDangerousWrites() {
   dangerConfirmation.value = false;
   await action(() => runtime.updateSettings({ dangerousNonCharacterResourceWrites: true }));
 }
+
+async function updateMaxModelSteps(event: Event) {
+  const target = event.target as HTMLInputElement;
+  const raw = target.value.trim();
+  const parsed = raw === '' ? 0 : Number(raw);
+  const value = Number.isFinite(parsed) ? parsed : 0;
+  // 先乐观规范化输入框，失败时回滚到当前设置，避免用户输入被无声吞掉。
+  target.value = value > 0 ? String(value) : '';
+  const succeeded = await action(() => runtime.updateSettings({ maxModelSteps: value }));
+  if (!succeeded) target.value = maxModelStepsInput.value;
+}
 </script>
+
+<style lang="scss">
+// 需要压过 base.scss 中 `.dca-app input { width: 100% }` 的权重。
+.dca-app input.dca-steps-input {
+  width: 6.5rem;
+  flex: 0 0 auto;
+  text-align: center;
+}
+</style>

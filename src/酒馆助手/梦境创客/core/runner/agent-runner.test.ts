@@ -1,6 +1,6 @@
 import { tool, type ModelMessage } from 'ai';
-import { z } from 'zod';
 import { describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import { AgentRunner, MemoryRunnerJournal } from './agent-runner';
 import type { ModelStepExecutor, ModelStepRequest, ModelStepResult, RunnerToolCall } from './step-executor';
 import type { RunnerTool } from './tools';
@@ -528,5 +528,34 @@ describe('AgentRunner', () => {
     });
     expect((await approved.start('approve')).status).toBe('completed');
     expect(execute).toHaveBeenCalledOnce();
+  });
+
+  it('按配置的步骤上限停止，0表示不限制', async () => {
+    const loopCall = { input: {}, toolCallId: 'loop', toolName: 'read' };
+    const limitedExecutor = new QueueExecutor([modelStep([loopCall]), modelStep([loopCall]), modelStep([loopCall])]);
+    const limited = new AgentRunner({
+      executor: limitedExecutor,
+      journal: new MemoryRunnerJournal(),
+      maxModelSteps: 2,
+      tools: [runnerTool('read', true, async () => ({ ok: true }))],
+    });
+    const limitedState = await limited.start('loop');
+    expect(limitedState.status).toBe('failed');
+    expect(limitedState.failure).toContain('2');
+    expect(limitedExecutor.requests).toHaveLength(2);
+
+    const unlimitedExecutor = new QueueExecutor([
+      modelStep([loopCall]),
+      modelStep([loopCall]),
+      modelStep([], 'done'),
+    ]);
+    const unlimited = new AgentRunner({
+      executor: unlimitedExecutor,
+      journal: new MemoryRunnerJournal(),
+      maxModelSteps: 0,
+      tools: [runnerTool('read', true, async () => ({ ok: true }))],
+    });
+    expect((await unlimited.start('loop')).status).toBe('completed');
+    expect(unlimitedExecutor.requests).toHaveLength(3);
   });
 });

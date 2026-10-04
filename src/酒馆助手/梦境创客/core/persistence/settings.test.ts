@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_PRESET } from '../preset/compiler';
 import { DEFAULT_BUILTIN_AGENT } from './builtin-agent';
 import {
-  DEFAULT_DREAM_CARD_AGENT_SETTINGS,
-  mergeSettingsChanges,
-  normalizeSettings,
-  type CharacterStoreReference,
+    DEFAULT_DREAM_CARD_AGENT_SETTINGS,
+    mergeSettingsChanges,
+    normalizeSettings,
+    type CharacterStoreReference,
 } from './settings';
 
 function character(bindingId: string, revision: number): CharacterStoreReference {
@@ -133,6 +133,14 @@ describe('settings cross-window merge', () => {
       name: '梦境创客默认 Agent（已保留）',
     });
     expect(normalized.agentConfigurations[2]).toMatchObject({ id: 'agent:user', name: '我的 Agent' });
+  });
+
+  it('空值或0表示不限制单次任务模型步骤，非法输入回退默认值', () => {
+    expect(normalizeSettings({ maxModelSteps: 0 }).maxModelSteps).toBe(0);
+    expect(normalizeSettings({ maxModelSteps: -5 }).maxModelSteps).toBe(0);
+    expect(normalizeSettings({ maxModelSteps: 12.7 }).maxModelSteps).toBe(12);
+    expect(normalizeSettings({ maxModelSteps: Number.NaN }).maxModelSteps).toBe(0);
+    expect(normalizeSettings({}).maxModelSteps).toBe(64);
   });
 
 });
