@@ -1,0 +1,8 @@
+{
+    "name": "dream-card-agent-dev-server",
+    "version": "1.0.0",
+    "private": true,
+    "type": "commonjs",
+    "main": "index.js",
+    "description": "本地开发用：把 SleepTavernHome 构建出的 dist 以同源静态资源方式提供给酒馆，供梦境创客本地加载。"
+}

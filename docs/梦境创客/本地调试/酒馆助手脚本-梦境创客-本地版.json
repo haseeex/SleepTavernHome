@@ -1,0 +1,17 @@
+{
+    "type": "script",
+    "enabled": true,
+    "name": "梦境创客（本地版）",
+    "id": "dream-card-agent",
+    "content": "// 梦境创客本地调试入口\n// 1) 先在仓库根目录启动本地服务：start_http_server.bat（等价于 npx http-server . -p 5500 --cors -c-1）\n// 2) 换端口或主机只需修改下面的 baseUrl\nconst baseUrl = 'http://127.0.0.1:5500';\nconst moduleUrl = `${baseUrl}/dist/酒馆助手/梦境创客/index.js?t=${Date.now()}`;\n\nvoid (async () => {\n  try {\n    const dreamCreator = await import(moduleUrl);\n    if (dreamCreator.PLUGIN_ID !== 'dream-card-agent' || typeof dreamCreator.activate !== 'function') {\n      throw new Error('本地产物不是可用的梦境创客模块');\n    }\n\n    const version = dreamCreator.PLUGIN_VERSION ?? '0.0.0-local';\n    let snapshot = {\n      status: 'up-to-date',\n      currentVersion: version,\n      runningVersion: version,\n      latestVersion: version,\n      updateAvailable: false,\n      checkedAt: new Date().toISOString(),\n    };\n    const listeners = new Set();\n    const emit = () => listeners.forEach(listener => listener({ ...snapshot }));\n    const updater = {\n      pluginId: dreamCreator.PLUGIN_ID,\n      pluginName: '梦境创客（本地调试）',\n      getSnapshot: () => ({ ...snapshot }),\n      subscribe: listener => {\n        listeners.add(listener);\n        listener({ ...snapshot });\n        return () => listeners.delete(listener);\n      },\n      check: async () => {\n        snapshot = { ...snapshot, checkedAt: new Date().toISOString(), status: 'up-to-date' };\n        emit();\n        return { ...snapshot };\n      },\n      install: async () => {},\n    };\n\n    await dreamCreator.activate({\n      release: {\n        version,\n        tag: `dream-card-agent-local-v${version}`,\n        entry: 'dist/酒馆助手/梦境创客/index.js',\n        url: moduleUrl,\n        updaterApiMajor: 1,\n      },\n      updater,\n    });\n    console.info(`[梦境创客] 已加载本地调试版本 v${version}`);\n  } catch (error) {\n    console.error('[梦境创客] 本地调试版本加载失败。', error);\n    if (typeof toastr !== 'undefined') {\n      toastr.error(error instanceof Error ? error.message : String(error), '梦境创客');\n    }\n  }\n})();\n",
+    "info": "从本机 HTTP 服务动态载入仓库 dist 中的梦境创客；使用前请先在仓库根目录运行 start_http_server.bat（带 CORS 的本地文件服务）。",
+    "button": {
+        "enabled": true,
+        "buttons": []
+    },
+    "data": {},
+    "export_with": {
+        "data": true,
+        "button": true
+    }
+}

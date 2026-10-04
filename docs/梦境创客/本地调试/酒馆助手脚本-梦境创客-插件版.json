@@ -1,0 +1,17 @@
+{
+  "type": "script",
+  "enabled": true,
+  "name": "梦境创客（本地版·插件托管）",
+  "id": "dream-card-agent",
+  "content": "// 梦境创客本地调试入口（由酒馆服务端插件托管 dist，无需额外服务器）\n// 前置：plugins/dream-card-agent 插件已就位，且已运行过 sync_to_tavern.bat\nconst baseUrl = '/api/plugins/dream-card-agent';\nconst moduleUrl = `${baseUrl}/dist/酒馆助手/梦境创客/index.js?t=${Date.now()}`;\n\nvoid (async () => {\n  try {\n    const dreamCreator = await import(moduleUrl);\n    if (dreamCreator.PLUGIN_ID !== 'dream-card-agent' || typeof dreamCreator.activate !== 'function') {\n      throw new Error('本地产物不是可用的梦境创客模块');\n    }\n\n    const version = dreamCreator.PLUGIN_VERSION ?? '0.0.0-local';\n    let snapshot = {\n      status: 'up-to-date',\n      currentVersion: version,\n      runningVersion: version,\n      latestVersion: version,\n      updateAvailable: false,\n      checkedAt: new Date().toISOString(),\n    };\n    const listeners = new Set();\n    const emit = () => listeners.forEach(listener => listener({ ...snapshot }));\n    const updater = {\n      pluginId: dreamCreator.PLUGIN_ID,\n      pluginName: '梦境创客（本地调试）',\n      getSnapshot: () => ({ ...snapshot }),\n      subscribe: listener => {\n        listeners.add(listener);\n        listener({ ...snapshot });\n        return () => listeners.delete(listener);\n      },\n      check: async () => {\n        snapshot = { ...snapshot, checkedAt: new Date().toISOString(), status: 'up-to-date' };\n        emit();\n        return { ...snapshot };\n      },\n      install: async () => {},\n    };\n\n    await dreamCreator.activate({\n      release: {\n        version,\n        tag: `dream-card-agent-local-v${version}`,\n        entry: 'dist/酒馆助手/梦境创客/index.js',\n        url: moduleUrl,\n        updaterApiMajor: 1,\n      },\n      updater,\n    });\n    console.info(`[梦境创客] 已加载本地调试版本 v${version}（酒馆插件托管）`);\n  } catch (error) {\n    console.error('[梦境创客] 本地调试版本加载失败。', error);\n    if (typeof toastr !== 'undefined') {\n      toastr.error(error instanceof Error ? error.message : String(error), '梦境创客');\n    }\n  }\n})();\n",
+  "info": "由酒馆服务端插件 plugins/dream-card-agent 托管 dist 的本地调试入口；同源加载，无需额外 HTTP 服务器。使用前请运行仓库的 sync_to_tavern.bat。",
+  "button": {
+    "enabled": true,
+    "buttons": []
+  },
+  "data": {},
+  "export_with": {
+    "data": true,
+    "button": true
+  }
+}
