@@ -41,6 +41,9 @@ tools:
   - send_tavern_message
   - generate_tavern_reply
   - manage_character
+  - search_characters
+  - mount_character_resource
+  - unmount_character_resource
   - manage_html_project
   - run_javascript
   - prepare_render

@@ -1,16 +1,16 @@
 import type { ModelMessage } from 'ai';
 import type { OperationReplayConflict, OperationReplayDirection } from '../operations/operation-replayer';
 import type { PersistedOperationLog } from '../operations/types';
+import type { AgentConfiguration } from '../persistence/builtin-agent';
 import type { CompiledPreset, StructuredPreset } from '../preset/compiler';
+import type { ModelSelection } from '../provider/provider-config';
 import type { RunnerEvent, RunnerStatus } from '../runner/agent-runner';
 import type { ApiUsageBaseline, ContextUsage } from '../runner/context';
-import type { AgentSkill } from '../skills/types';
-import type { WorkspaceFile } from '../workspace/types';
-import type { TavernChatWorkspaceRuntime } from '../tavern/chat-workspace';
 import type { PreparedRender } from '../runner/playground-tools';
+import type { AgentSkill } from '../skills/types';
+import type { TavernChatWorkspaceRuntime } from '../tavern/chat-workspace';
+import type { WorkspaceFile } from '../workspace/types';
 import type { SessionAttachmentSummary, StoredSessionAttachment } from './attachments';
-import type { ModelSelection } from '../provider/provider-config';
-import type { AgentConfiguration } from '../persistence/builtin-agent';
 
 export type SessionMode = 'full' | 'normal' | 'yolo';
 export type SessionScope = 'character' | 'global';
@@ -72,6 +72,7 @@ export type PersistedSessionRuntime = {
   headerMessageCount: number;
   lastError?: string;
   manualEditGroup?: ManualEditGroup;
+  mountedCharacters?: string[];
   mountedWorldbooks: string[];
   mountedPresets?: string[];
   mode: SessionMode;

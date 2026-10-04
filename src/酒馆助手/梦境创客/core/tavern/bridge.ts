@@ -64,6 +64,25 @@ export type TavernCharacterSummary = {
   name: string;
 };
 
+/** 按名称读取到的角色卡资源；脚本与正则直接来自卡内嵌的扩展字段。 */
+export type RawCharacterResource = {
+  avatarId: string | null;
+  creator: string;
+  creatorNotes: string;
+  description: string;
+  greetings: string[];
+  mesExample: string;
+  name: string;
+  personality: string;
+  postHistoryInstructions: string;
+  regexes: RawTavernRegex[];
+  scenario: string;
+  scripts: RawTavernScriptTree[];
+  systemPrompt: string;
+  tags: string[];
+  version: string;
+};
+
 export type TavernPersonaData = Persona;
 export type TavernPresetData = Preset;
 
@@ -92,6 +111,10 @@ export interface TavernBridge {
   getCharacterAvatarPath(): string | null;
   getWorldbookNames(): string[];
   listCharacters(): TavernCharacterSummary[];
+  /** 列出酒馆中的全部角色卡名称与头像 id，不依赖当前打开的是哪张卡。 */
+  listAllCharacters(): TavernCharacterSummary[];
+  /** 按角色名或头像 id 读取任意一张角色卡的字段、脚本与正则。 */
+  getCharacterResource(name: string): Promise<RawCharacterResource>;
   getRawCharacter(): RawCharacterData | null;
   getRawRegexes(scope: TavernResourceScope): RawTavernRegex[];
   getRawScriptTrees(scope: TavernResourceScope): RawTavernScriptTree[];
@@ -118,6 +141,46 @@ export interface TavernBridge {
 
 function scriptScope(scope: TavernResourceScope): ScriptTreesOptions['type'] {
   return scope === 'preset-current' ? 'preset' : scope;
+}
+
+function record(value: unknown): Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function characterText(value: unknown, fallback = ''): string {
+  return typeof value === 'string' ? value : fallback;
+}
+
+function characterStrings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+/** 把 `getCharacter` 返回的角色卡规整成桥接层统一的字段形状。 */
+function characterResource(raw: Record<string, unknown>, requestedName: string): RawCharacterResource {
+  const data = record(raw.data);
+  const extensions = record(data.extensions);
+  const regexes = Array.isArray(extensions.regex_scripts) ? extensions.regex_scripts : [];
+  const scripts = Array.isArray(record(extensions.tavern_helper).scripts)
+    ? (record(extensions.tavern_helper).scripts as unknown[])
+    : [];
+  const firstMessage = characterText(data.first_mes, characterText(raw.first_mes));
+  return {
+    avatarId: typeof raw.avatar === 'string' ? raw.avatar : null,
+    creator: characterText(data.creator),
+    creatorNotes: characterText(data.creator_notes, characterText(raw.creatorcomment)),
+    description: characterText(data.description, characterText(raw.description)),
+    greetings: [firstMessage, ...characterStrings(data.alternate_greetings)].filter(item => item !== ''),
+    mesExample: characterText(data.mes_example, characterText(raw.mes_example)),
+    name: characterText(raw.name, requestedName),
+    personality: characterText(data.personality, characterText(raw.personality)),
+    postHistoryInstructions: characterText(data.post_history_instructions),
+    regexes: klona(regexes) as RawTavernRegex[],
+    scenario: characterText(data.scenario, characterText(raw.scenario)),
+    scripts: klona(scripts) as RawTavernScriptTree[],
+    systemPrompt: characterText(data.system_prompt),
+    tags: [...new Set([...characterStrings(data.tags), ...characterStrings(raw.tags)])],
+    version: characterText(data.character_version),
+  };
 }
 
 async function refreshRegexDisplay(): Promise<void> {
@@ -221,6 +284,20 @@ export function createGlobalTavernBridge(): TavernBridge {
         name: String(character.name ?? ''),
       })),
     getRawCharacter: () => getCharData('current') as RawCharacterData | null,
+    listAllCharacters: () => {
+      if (typeof getCharacterNames !== 'function') return [];
+      const ids = typeof getCharacterIds === 'function' ? getCharacterIds() : [];
+      return getCharacterNames().map((name, index) => ({
+        avatarId: String(ids[index] ?? ''),
+        index,
+        name: String(name ?? ''),
+      }));
+    },
+    getCharacterResource: async name => {
+      if (typeof getCharacter !== 'function') throw new Error('当前酒馆助手版本不提供按名称读取角色卡的接口。');
+      const raw = (await getCharacter(name)) as unknown as Record<string, unknown>;
+      return characterResource(raw, name);
+    },
     getRawRegexes: scope => {
       const context = SillyTavern;
       if (scope === 'character') {

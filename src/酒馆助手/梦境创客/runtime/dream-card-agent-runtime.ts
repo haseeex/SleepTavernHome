@@ -397,8 +397,25 @@ export class DreamCardAgentRuntime {
     if (isSessionOperationActive(status)) throw new Error('请先停止任务再恢复会话记录。');
     await this.closeSession(sessionId);
     await this.localSessions.restoreBackup(bindingId, sessionId);
+    if (this.state.sessionBackup?.conflictSessionId === sessionId) {
+      const { conflictSessionId: _cleared, ...rest } = this.state.sessionBackup;
+      this.state.sessionBackup = rest;
+    }
     if (scope === 'global') await this.openGlobalSession(sessionId);
     else await this.openSession(sessionId);
+  }
+
+  /** 冲突时以本机内容覆盖后端备份；后端当前版本会先存为本机恢复点。 */
+  async forcePushCurrentSessionBackup(): Promise<void> {
+    if (!this.localSessions || !this.state.active) throw new Error('请先打开需要处理的会话。');
+    const { bindingId, sessionId, status } = this.state.active;
+    if (isSessionOperationActive(status)) throw new Error('请先停止任务再处理备份冲突。');
+    const service = this.services.get(sessionId);
+    if (service) {
+      await this.flushDeferredSessionSave(service);
+      await service.finalizeManualEdits();
+    }
+    await this.localSessions.forcePushSession(bindingId, sessionId);
   }
 
   async refreshSessionBackups(): Promise<void> {

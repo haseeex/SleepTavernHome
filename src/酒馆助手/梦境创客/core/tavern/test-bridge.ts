@@ -1,14 +1,15 @@
 import { klona } from 'klona';
-import { transactionEntry, transactionState } from '../transaction/test-fixture';
 import type { TavernResourceScope } from '../mapping/types';
+import { transactionEntry, transactionState } from '../transaction/test-fixture';
 import type {
   RawCharacterData,
+  RawCharacterResource,
   RawTavernRegex,
   RawTavernScriptTree,
   TavernBridge,
-  TavernWorldbookEntry,
   TavernPersonaData,
   TavernPresetData,
+  TavernWorldbookEntry,
 } from './bridge';
 
 function tavernEntry(id: string, uid: number): TavernWorldbookEntry {
@@ -248,6 +249,37 @@ export class FakeTavernBridge implements TavernBridge {
 
   listCharacters() {
     return this.characters.map((character, index) => ({ avatarId: character.avatar, index, name: character.name }));
+  }
+
+  listAllCharacters() {
+    return this.listCharacters();
+  }
+
+  async getCharacterResource(name: string): Promise<RawCharacterResource> {
+    const source = this.characters.find(character => character.name === name || character.avatar === name);
+    if (!source) throw new Error(`角色不存在：${name}`);
+    const data = source.data;
+    const extensions = (data.extensions ?? {}) as Record<string, unknown>;
+    const helper = (extensions.tavern_helper ?? {}) as Record<string, unknown>;
+    return {
+      avatarId: typeof source.avatar === 'string' ? source.avatar : null,
+      creator: data.creator ?? '',
+      creatorNotes: data.creator_notes ?? source.creatorcomment ?? '',
+      description: data.description ?? source.description ?? '',
+      greetings: [data.first_mes ?? source.first_mes ?? '', ...(data.alternate_greetings ?? [])].filter(
+        item => item !== '',
+      ),
+      mesExample: data.mes_example ?? source.mes_example ?? '',
+      name: source.name,
+      personality: data.personality ?? source.personality ?? '',
+      postHistoryInstructions: data.post_history_instructions ?? '',
+      regexes: klona((extensions.regex_scripts as RawTavernRegex[] | undefined) ?? []),
+      scenario: data.scenario ?? source.scenario ?? '',
+      scripts: klona((helper.scripts as RawTavernScriptTree[] | undefined) ?? []),
+      systemPrompt: data.system_prompt ?? '',
+      tags: [...new Set([...(data.tags ?? []), ...(source.tags ?? [])])],
+      version: data.character_version ?? '',
+    };
   }
 
   getRawCharacter(): RawCharacterData | null {

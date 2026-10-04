@@ -1,5 +1,5 @@
-import { getDreamCardAgentRuntime, type DreamCardAgentRuntime } from '../runtime/dream-card-agent-runtime';
 import type { PluginActivationContext } from '../../../公共模块/脚本更新器/contracts';
+import { getDreamCardAgentRuntime, type DreamCardAgentRuntime } from '../runtime/dream-card-agent-runtime';
 
 const CLIENT_METHODS = [
   'applyAgentConfiguration',
@@ -78,6 +78,7 @@ const CLIENT_METHODS = [
   'backupSessions',
   'exportBrowserSessions',
   'restoreCurrentSessionBackup',
+  'forcePushCurrentSessionBackup',
   'refreshSessionBackups',
 ] as const satisfies readonly (keyof DreamCardAgentRuntime)[];
 export type DreamCardAgentClient = Pick<DreamCardAgentRuntime, (typeof CLIENT_METHODS)[number]>;

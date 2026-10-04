@@ -2,8 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { compilePreset, DEFAULT_PRESET } from '../preset/compiler';
 import { defaultPresetValues } from '../session/prompt';
 import type { PersistedSessionRuntime } from '../session/types';
-import { defaultBuiltinAgentConfiguration } from './builtin-agent';
 import { MemoryBrowserRecordStore } from './browser-record-store';
+import { defaultBuiltinAgentConfiguration } from './builtin-agent';
 import { CharacterMetadataStore } from './character-store';
 import { MemoryTavernFileClient } from './file-client';
 import { LocalSessionStore, type SessionBackupStatus } from './local-session-store';
@@ -139,6 +139,33 @@ describe('local session persistence', () => {
     expect(statuses.at(-1)?.error).toContain('已被其他页面更新');
     expect((await store.load('card', 'one')).runtime.title).toBe('本机版本');
     expect((await remote.load('card', 'one')).runtime.title).toBe('远端版本');
+  });
+
+  it('后端版本领先但内容一致时自动对齐，不报告冲突', async () => {
+    const { store, input, remote, statuses } = await fixture();
+    await store.commit(input);
+    await store.backup();
+    await remote.commit(input);
+    await store.commit(input);
+    await store.backup();
+    expect(statuses.at(-1)?.error).toBeUndefined();
+    expect(statuses.at(-1)?.pending).toBe(0);
+    expect(statuses.at(-1)?.conflictSessionId).toBeUndefined();
+  });
+
+  it('以本机覆盖后端会先保留后端恢复点并消除冲突', async () => {
+    const { store, input, remote, statuses } = await fixture();
+    await store.commit(input);
+    await store.backup();
+    await remote.commit({ ...input, runtime: { ...input.runtime, title: '远端版本' } });
+    await store.commit({ ...input, runtime: { ...input.runtime, title: '本机版本' } });
+    await store.backup();
+    expect(statuses.at(-1)?.conflictSessionId).toBe('one');
+    await store.forcePushSession('card', 'one');
+    expect((await remote.load('card', 'one')).runtime.title).toBe('本机版本');
+    expect(await store.exportSessions()).toContain('远端版本');
+    expect(statuses.at(-1)?.error).toBeUndefined();
+    expect(statuses.at(-1)?.conflictSessionId).toBeUndefined();
   });
 
   it('本地写入失败会明确拒绝保存', async () => {

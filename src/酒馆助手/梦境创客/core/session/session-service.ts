@@ -19,6 +19,7 @@ import { compilePreset, DEFAULT_PRESET, type CompiledPreset, type StructuredPres
 import type { ModelSelection } from '../provider/provider-config';
 import { AgentRunner, DEFAULT_MAX_MODEL_STEPS, type PendingRunnerStep, type RunnerEvent, type RunnerStatus } from '../runner/agent-runner';
 import { createAvatarRunnerTools } from '../runner/avatar-tools';
+import { characterResourceRoot, createCharacterResourceRunnerTools, projectCharacterResourceFiles } from '../runner/character-resource-tools';
 import { createCharacterRunnerTools } from '../runner/character-tools';
 import { measureContext, type ApiUsageBaseline } from '../runner/context';
 import { createPlaygroundRunnerTools, type PreparedRender } from '../runner/playground-tools';
@@ -221,6 +222,7 @@ export class CardAgentSessionService {
   private modelSelection?: ModelSelection;
   private modelVisionEnabled = true;
   private readonly mountedWorldbooks: Set<string>;
+  private readonly mountedCharacters: Set<string>;
   private readonly mountedPresets: Set<string>;
   private runModelSelection?: ModelSelection;
   private pendingGuidance: Array<{ id: string; message: string }> = [];
@@ -276,6 +278,7 @@ export class CardAgentSessionService {
     this.modelControls = klona(restored?.runtime.modelControls ?? { reasoningEffort: 'auto', webSearch: false });
     this.modelSelection = klona(restored?.runtime.modelSelection ?? options.modelSelection);
     this.mountedWorldbooks = options.mountedWorldbooks ?? new Set(restored?.runtime.mountedWorldbooks ?? []);
+    this.mountedCharacters = new Set(restored?.runtime.mountedCharacters ?? []);
     this.mountedPresets = options.mountedPresets ?? new Set(restored?.runtime.mountedPresets ?? []);
     this.runModelSelection = klona(restored?.runtime.runModelSelection);
     this.pendingGuidance = klona(restored?.runtime.pendingGuidance ?? []);
@@ -1207,12 +1210,26 @@ export class CardAgentSessionService {
         .records.filter(record => record.state === 'applied')
         .map(record => record.toolCallId),
       onCommitted: (result, toolCallId) => this.recordRealtimeMutation(result, toolCallId),
-      readonlyRoots: ['/context', '/skills/builtin'],
+      readonlyRoots: ['/context', '/characters', '/skills/builtin'],
       source,
     });
     await repository.initialize();
     this.tavernChatWorkspace?.projectCached(repository);
+    await this.restoreMountedCharacters(repository).catch(() => undefined);
     return repository;
+  }
+
+  /** 会话重开时把已挂载的只读角色资料重新投影进工作区。 */
+  private async restoreMountedCharacters(repository: LiveWorkspaceRepository): Promise<void> {
+    if (!this.tavernBridge || this.mountedCharacters.size === 0) return;
+    for (const name of [...this.mountedCharacters]) {
+      try {
+        const resource = await this.tavernBridge.getCharacterResource(name);
+        repository.replaceProjection(characterResourceRoot(resource.name), projectCharacterResourceFiles(resource));
+      } catch {
+        this.mountedCharacters.delete(name);
+      }
+    }
   }
 
   private decorateWorkspace(files: WorkspaceFile[]): WorkspaceFile[] {
@@ -1233,6 +1250,7 @@ export class CardAgentSessionService {
       `- 当前User文件：${files.find(file => file.resourceId === `persona:${this.tavernBridge?.getCurrentPersonaId()}`)?.path ?? '未挂载'}`,
       `- 角色目录：${hasCharacter ? '/character' : '未挂载'}`,
       `- 已挂载世界书：${mountedWorldbooks.length > 0 ? mountedWorldbooks.join('、') : '无'}`,
+      `- 已挂载角色资料：${this.mountedCharacters.size > 0 ? [...this.mountedCharacters].join('、') : '无'}（/characters）`,
       '- 全局持久文件：/files',
       `- 角色持久文件：${hasCharacter ? '/character/files' : '未挂载'}`,
       '- 正则：/regexes/{character,preset-current,global}',
@@ -1462,6 +1480,13 @@ export class CardAgentSessionService {
                     );
                   }
                 : undefined,
+            })
+          : []),
+        ...(this.tavernBridge && this.repository
+          ? createCharacterResourceRunnerTools(this.repository, this.tavernBridge, {
+              approvalMode: () => (this.mode === 'full' ? 'full' : this.mode === 'yolo' ? 'yolo' : 'manual'),
+              onMount: name => this.mountedCharacters.add(name),
+              onUnmount: name => this.mountedCharacters.delete(name),
             })
           : []),
         ...(this.tavernBridge
@@ -1961,6 +1986,7 @@ export class CardAgentSessionService {
       mode: this.mode,
       modelControls: klona(this.modelControls),
       modelSelection: this.modelSelection ? klona(this.modelSelection) : undefined,
+      mountedCharacters: [...this.mountedCharacters],
       mountedWorldbooks: [...this.mountedWorldbooks],
       mountedPresets: [...this.mountedPresets],
       runModelSelection: this.runModelSelection ? klona(this.runModelSelection) : undefined,

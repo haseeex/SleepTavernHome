@@ -26,6 +26,9 @@
         >
           重试备份
         </button>
+        <button v-if="state.sessionBackup.conflictSessionId" type="button" @click="resolveConflict">
+          处理冲突
+        </button>
       </div>
       <main class="dca-main">
         <HomeView v-if="workspaceView === 'home'" />
@@ -54,24 +57,30 @@
 <script setup lang="ts">
 import { onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import HomeView from './components/home/HomeView.vue';
-import OnboardingDialog from './components/OnboardingDialog.vue';
 import CharacterSwitchDialog from './components/navigation/CharacterSwitchDialog.vue';
 import PrimarySidebar from './components/navigation/PrimarySidebar.vue';
+import OnboardingDialog from './components/OnboardingDialog.vue';
 import SessionWorkbench from './components/session/SessionWorkbench.vue';
 import SettingsWorkspace from './components/settings/SettingsWorkspace.vue';
 import SkillEditorDialog from './components/SkillEditorDialog.vue';
 import WorkspaceTabs from './components/WorkspaceTabs.vue';
 import { provideDreamCardAgent } from './composables/runtime';
+import { clientEnvironment } from './runtime-client';
 import { mountThemeRuntime, type MountedThemeRuntime } from './theme/runtime';
 import { getThemeStore } from './theme/store';
 import { DEFAULT_THEME_ID } from './theme/types';
-import { clientEnvironment } from './runtime-client';
 
-const { isMobile, mobileSurface, runtime, sidebarCollapsed, state, workspaceView } = provideDreamCardAgent();
+const { isMobile, mobileSurface, runtime, settingsSection, sidebarCollapsed, state, workspaceView } =
+  provideDreamCardAgent();
 const appRoot = ref<HTMLElement>();
 const themeStore = getThemeStore();
 let themeRuntime: MountedThemeRuntime | undefined;
 let unsubscribeThemes = () => {};
+
+function resolveConflict() {
+  settingsSection.value = 'storage';
+  workspaceView.value = 'settings';
+}
 
 function publishWindowLayout() {
   if (clientEnvironment()) return;
@@ -155,7 +164,6 @@ onBeforeUnmount(() => {
 .dca-backup-state.error {
   color: var(--dca-warning);
 }
-
 .dca-workspace-surface {
   display: flex;
   min-width: 0;

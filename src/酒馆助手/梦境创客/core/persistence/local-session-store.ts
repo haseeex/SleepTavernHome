@@ -1,4 +1,5 @@
 import { klona } from 'klona';
+import { canonicalEqual } from '../transaction/canonical';
 import type { BrowserRecordStore } from './browser-record-store';
 import { CharacterMetadataStore, type CharacterMetadata } from './character-store';
 import { SessionRevisionStore, type CommitSessionRevision, type SessionRevision } from './session-store';
@@ -18,6 +19,8 @@ export type SessionBackupStatus = {
   localPending?: number;
   error?: string;
   lastSavedAt?: number;
+  /** 后端版本领先、需要用户决定取舍的会话 ID。 */
+  conflictSessionId?: string;
 };
 const keyFor = (bindingId: string, sessionId: string) =>
   `session:${encodeURIComponent(bindingId)}:${encodeURIComponent(sessionId)}`;
@@ -28,6 +31,8 @@ export class LocalSessionStore {
   private disposed = false;
   private lastSavedAt?: number;
   private error?: string;
+  /** 后端版本领先、等待用户处理的会话；这些会话不参与自动重试。 */
+  private readonly conflicts = new Set<string>();
 
   constructor(
     private readonly local: BrowserRecordStore,
@@ -182,8 +187,9 @@ export class LocalSessionStore {
       .finally(async () => {
         this.syncing = undefined;
         await this.publish();
-        if ((await this.local.list<LocalSessionIndex>('session-index:')).some(row => row.value.dirty))
-          this.schedule(30_000);
+        const rows = await this.local.list<LocalSessionIndex>('session-index:');
+        // 冲突中的会话不参与自动重试，避免永远刷同一条错误；其它待备份会话仍然继续。
+        if (rows.some(row => row.value.dirty && !this.conflicts.has(row.value.entry.sessionId))) this.schedule(30_000);
       });
     return this.syncing;
   }
@@ -200,12 +206,16 @@ export class LocalSessionStore {
       const metadata = await this.characters.load(row.entry.bindingId);
       const existing = metadata.sessions[row.entry.sessionId];
       if (existing && existing.revision !== row.remoteRevision) {
+        // 内容与后端完全一致时只是引用版本落后，直接对齐，不打扰用户。
+        if (await this.alignIfIdentical(row, existing)) continue;
         this.error = `“${row.entry.title}”的后端备份已被其他页面更新，本机内容已保留。`;
+        this.conflicts.add(row.entry.sessionId);
         continue;
       }
       const entry = row.deleted
         ? (await this.characters.removeSession(row.entry.bindingId, row.entry.sessionId), undefined)
         : await this.remote.commit(row.input);
+      this.conflicts.delete(row.entry.sessionId);
       await this.updateSession(key, current => {
         if (!current) return current;
         return {
@@ -218,6 +228,60 @@ export class LocalSessionStore {
       await this.local.put(`metadata:${row.entry.bindingId}`, await this.characters.load(row.entry.bindingId));
       this.lastSavedAt = Date.now();
     }
+  }
+
+  /** 后端版本领先但内容与本地一致时，把本地引用对齐到后端，消除无意义的冲突。 */
+  private async alignIfIdentical(row: LocalSession, existing: SessionIndexEntry): Promise<boolean> {
+    if (row.deleted) return false;
+    let remote: SessionRevision;
+    try {
+      remote = await this.remote.load(row.entry.bindingId, row.entry.sessionId);
+    } catch {
+      return false;
+    }
+    if (!canonicalEqual(remote.runtime, row.input.runtime)) return false;
+    await this.updateSession(keyFor(row.entry.bindingId, row.entry.sessionId), current =>
+      current ? { ...current, dirty: false, remoteRevision: existing.revision, entry: klona(existing) } : current,
+    );
+    this.conflicts.delete(row.entry.sessionId);
+    return true;
+  }
+
+  /**
+   * 以本机内容覆盖后端备份（冲突时使用）。
+   * 会先把后端当前版本存成本机恢复点，再上传本机内容。
+   */
+  async forcePushSession(bindingId: string, sessionId: string): Promise<void> {
+    const key = keyFor(bindingId, sessionId);
+    const row = await this.local.get<LocalSession>(key);
+    if (!row) throw new Error('本机没有这个会话的记录。');
+    try {
+      const remote = await this.remote.load(bindingId, sessionId);
+      const recovery: LocalSession = {
+        dirty: false,
+        entry: klona(remote.entry),
+        input: {
+          avatarId: remote.entry.avatarId,
+          bindingId,
+          characterName: remote.entry.characterName,
+          runtime: klona(remote.runtime),
+          status: remote.entry.status,
+        },
+        remoteRevision: remote.entry.revision,
+      };
+      await this.local.put(`session-recovery:${sessionId}:${crypto.randomUUID()}`, recovery);
+    } catch {
+      // 后端没有可用记录时无需恢复点。
+    }
+    const metadata = await this.characters.load(bindingId);
+    const existing = metadata.sessions[sessionId];
+    await this.updateSession(key, current =>
+      current ? { ...current, dirty: true, remoteRevision: existing?.revision ?? 0 } : current,
+    );
+    this.conflicts.delete(sessionId);
+    this.error = undefined;
+    await this.syncing;
+    await this.backup();
   }
 
   async refreshBackups(): Promise<void> {
@@ -260,13 +324,20 @@ export class LocalSessionStore {
         runtime: revision.runtime,
       },
     }));
+    this.conflicts.delete(sessionId);
     this.error = undefined;
     await this.publish();
   }
 
   private async publish(syncing = Boolean(this.syncing)) {
     const pending = (await this.local.list<LocalSessionIndex>('session-index:')).filter(row => row.value.dirty).length;
-    this.onStatus({ pending, syncing, error: this.error, lastSavedAt: this.lastSavedAt });
+    this.onStatus({
+      pending,
+      syncing,
+      error: this.error,
+      lastSavedAt: this.lastSavedAt,
+      conflictSessionId: this.conflicts.values().next().value,
+    });
   }
 
   dispose() {

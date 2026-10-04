@@ -21,7 +21,18 @@
         <button type="button" :disabled="busy || !state.active || state.busy" @click="restorePending = true">
           恢复当前会话的后端备份
         </button>
+        <button
+          class="dca-btn-danger"
+          type="button"
+          :disabled="busy || !state.active || state.busy"
+          @click="forcePushPending = true"
+        >
+          以本机覆盖后端
+        </button>
       </div>
+      <p v-if="state.sessionBackup?.conflictSessionId" class="dca-storage-conflict">
+        检测到会话备份冲突：后端已被其他页面更新。请选择「恢复当前会话的后端备份」或「以本机覆盖后端」。
+      </p>
     </section>
     <div v-if="restorePending" class="dca-modal-backdrop">
       <section class="dca-modal" role="dialog" aria-modal="true">
@@ -30,6 +41,17 @@
         <footer>
           <button type="button" @click="restorePending = false">取消</button
           ><button type="button" @click="restoreBackup">恢复备份</button>
+        </footer>
+      </section>
+    </div>
+
+    <div v-if="forcePushPending" class="dca-modal-backdrop">
+      <section class="dca-modal" role="dialog" aria-modal="true">
+        <header><strong>用本机内容覆盖后端备份？</strong></header>
+        <p>后端当前版本会先保存为本机恢复点，可以随本机会话一起导出。角色卡和世界书保持当前内容。</p>
+        <footer>
+          <button type="button" @click="forcePushPending = false">取消</button
+          ><button type="button" @click="forcePushBackup">覆盖后端</button>
         </footer>
       </section>
     </div>
@@ -173,6 +195,7 @@ import { useDreamCardAgent } from '../../composables/runtime';
 const { action, openedSessionIds, runtime, state, workspaceView } = useDreamCardAgent();
 const busy = ref(false);
 const restorePending = ref(false);
+const forcePushPending = ref(false);
 async function exportSessions() {
   await action(async () => {
     const text = await runtime.exportBrowserSessions();
@@ -191,6 +214,14 @@ async function restoreBackup() {
       restorePending.value = false;
       workspaceView.value = 'session';
     }
+  } finally {
+    busy.value = false;
+  }
+}
+async function forcePushBackup() {
+  busy.value = true;
+  try {
+    if (await action(() => runtime.forcePushCurrentSessionBackup())) forcePushPending.value = false;
   } finally {
     busy.value = false;
   }
@@ -294,6 +325,12 @@ async function resetEverything() {
 <style lang="scss">
 .dca-storage-settings {
   padding-bottom: 2rem;
+}
+
+.dca-storage-conflict {
+  margin: 0.35rem 0 0;
+  color: var(--dca-warning);
+  font-size: 0.78rem;
 }
 
 .dca-character-storage-list,

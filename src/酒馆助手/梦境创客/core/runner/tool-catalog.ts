@@ -48,6 +48,16 @@ export const AGENT_TOOL_GROUPS = [
     tools: [{ id: 'manage_character', label: '管理角色', readonly: false }],
   },
   {
+    description: '按名称把其他角色卡以只读方式挂载到 /characters 供参考，不会修改对方的卡。',
+    id: 'character-resources',
+    label: '角色资料',
+    tools: [
+      { id: 'search_characters', label: '搜索角色卡', readonly: true },
+      { id: 'mount_character_resource', label: '挂载角色资料', readonly: true },
+      { id: 'unmount_character_resource', label: '卸载角色资料', readonly: true },
+    ],
+  },
+  {
     description: '检查和编译位于全局或角色文件区的HTML工程。',
     id: 'projects',
     label: '工程与预览',
