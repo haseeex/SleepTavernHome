@@ -8,7 +8,17 @@ import { getDreamCardAgentClient, type DreamCardAgentClient } from '../runtime-c
 
 export type WorkspaceView = 'home' | 'session' | 'settings';
 export type SettingsSection =
-  'agent' | 'api' | 'diagnostics' | 'general' | 'preset' | 'resources' | 'skills' | 'storage' | 'theme' | 'update';
+  | 'agent'
+  | 'api'
+  | 'diagnostics'
+  | 'general'
+  | 'mcp'
+  | 'preset'
+  | 'resources'
+  | 'skills'
+  | 'storage'
+  | 'theme'
+  | 'update';
 export type SidebarTab = 'context' | 'diff' | 'files';
 
 export type SkillEditorRequest = { builtin?: boolean; deleting: boolean; skill?: AgentSkill };

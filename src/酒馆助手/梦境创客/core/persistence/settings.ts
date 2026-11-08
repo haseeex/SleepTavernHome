@@ -1,9 +1,11 @@
+import { normalizeMcpServers } from '../mcp/config';
+import type { McpServerConfig } from '../mcp/types';
 import { cloneStructuredPreset, DEFAULT_PRESET, type StructuredPreset } from '../preset/compiler';
 import {
-  findSelectedModel,
-  normalizeApiProvider,
-  type ApiProvider,
-  type ModelSelection,
+    findSelectedModel,
+    normalizeApiProvider,
+    type ApiProvider,
+    type ModelSelection,
 } from '../provider/provider-config';
 import { isAgentToolId } from '../runner/tool-catalog';
 import type { SessionMode } from '../session/types';
@@ -137,6 +139,7 @@ export type DreamCardAgentSettings = {
   floatingButtonAnchor: FloatingButtonAnchor;
   floatingButtonOffset: FloatingButtonOffset;
   globalSkills: Record<string, GlobalSkillIndexEntry>;
+  mcpServers: McpServerConfig[];
   onboardingDone: boolean;
   defaultModelSelection?: ModelSelection;
   providers: ApiProvider[];
@@ -178,6 +181,7 @@ export const DEFAULT_DREAM_CARD_AGENT_SETTINGS: DreamCardAgentSettings = {
   floatingButtonAnchor: 'middle-right',
   floatingButtonOffset: { x: 18, y: 0 },
   globalSkills: {},
+  mcpServers: [],
   onboardingDone: false,
   providers: [],
   presetProfiles: [cloneStructuredPreset(DEFAULT_PRESET)],
@@ -320,6 +324,7 @@ export function normalizeSettings(raw?: Partial<DreamCardAgentSettings>): DreamC
       y: Number.isFinite(offset?.y) ? offset!.y : defaultOffset.y,
     },
     globalSkills: structuredClone(raw?.globalSkills ?? {}),
+    mcpServers: normalizeMcpServers(raw?.mcpServers),
     defaultModelSelection,
     providers,
     presetProfiles,
@@ -374,6 +379,7 @@ export function mergeSettingsChanges(
     floatingButtonAnchor: choose('floatingButtonAnchor'),
     floatingButtonOffset: choose('floatingButtonOffset'),
     globalSkills: applyRecordChanges(base.globalSkills, incoming.globalSkills, latest.globalSkills),
+    mcpServers: choose('mcpServers'),
     onboardingDone: choose('onboardingDone'),
     defaultModelSelection: choose('defaultModelSelection'),
     providers: choose('providers'),

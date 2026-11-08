@@ -1,18 +1,18 @@
 import { klona } from 'klona';
-import { normalizeWorkspacePath, parentWorkspacePath } from './path';
-import { MemoryWorkspaceRepository } from './memory-repository';
-import { isBinaryWorkspaceFile } from './types';
-import type {
-  SearchQuery,
-  SearchResult,
-  WorkspaceChange,
-  WorkspaceEntry,
-  WorkspaceFile,
-  WorkspaceMutationResult,
-  WorkspaceRepository,
-  WorkspaceWriteOptions,
-} from './types';
 import type { FileOperationPayload } from '../operations/types';
+import { MemoryWorkspaceRepository } from './memory-repository';
+import { normalizeWorkspacePath, parentWorkspacePath } from './path';
+import type {
+    SearchQuery,
+    SearchResult,
+    WorkspaceChange,
+    WorkspaceEntry,
+    WorkspaceFile,
+    WorkspaceMutationResult,
+    WorkspaceRepository,
+    WorkspaceWriteOptions,
+} from './types';
+import { isBinaryWorkspaceFile } from './types';
 
 export type LiveWorkspaceApplyInput = {
   changes: WorkspaceChange[];
@@ -202,6 +202,44 @@ export class LiveWorkspaceRepository extends MemoryWorkspaceRepository implement
       } else {
         await super.move(payload.from, payload.path, localToolCallId);
       }
+    });
+  }
+
+  /**
+   * 强制回放：直接把文件写成目标内容，不再做补丁匹配。
+   *
+   * 世界书条目、临时文件在页面刷新后会重新投影，内容与操作记录时的快照天然对不上，
+   * 严格校验会让整轮回退永远无法完成。这里用「直接覆盖」保证回退一定能落地：
+   * 该删的删、该建的建、该覆盖的覆盖，目标不存在或已存在都不再报错。
+   */
+  async replayForce(payload: FileOperationPayload, toolCallId: string): Promise<void> {
+    if (payload.kind === 'modify' && isBinaryWorkspaceFile(payload.after)) {
+      await this.applyDirect(
+        [{ after: payload.after, before: payload.before, kind: 'modify', path: payload.path }],
+        toolCallId,
+      );
+      return;
+    }
+    await this.mutate(toolCallId, async localToolCallId => {
+      if (payload.kind === 'delete') {
+        await super.remove(payload.path, localToolCallId).catch(() => undefined);
+        return;
+      }
+      if (payload.kind === 'create') {
+        // 目标可能已被外部重建，先清掉再按记录写回。
+        if (await super.read(payload.path).then(
+          () => true,
+          () => false,
+        ))
+          await super.remove(payload.path, `${localToolCallId}:clear`);
+        await super.stageFiles([{ ...klona(payload.file), path: payload.path }], localToolCallId);
+        return;
+      }
+      if (payload.kind === 'modify') {
+        await super.write(payload.path, payload.after.content, localToolCallId, { overwrite: true });
+        return;
+      }
+      await super.move(payload.from, payload.path, localToolCallId);
     });
   }
 

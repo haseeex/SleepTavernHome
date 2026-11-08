@@ -8,12 +8,42 @@ describe('会话延迟落盘', () => {
   it('检测其他页面的同版本写入冲突并保留待保存内容', async () => {
     vi.useFakeTimers();
     const base = new MemoryBrowserRecordStore();
-    const store = new BufferedSessionRecordStore(base);
+    const errors: unknown[] = [];
+    const store = new BufferedSessionRecordStore(base, undefined, error => errors.push(error));
     await store.put('session:one', { entry: { revision: 2 }, input: '本页' });
     await base.put('session:one', { entry: { revision: 2 }, input: '其他页' });
-    await expect(store.flush()).rejects.toThrow('其他页面');
+    // 冲突通过 onError 上报，不再让 flush 抛错中断整批写入。
+    await store.flush();
+    expect(String(errors[0])).toContain('其他页面');
     expect(await base.get('session:one')).toMatchObject({ input: '其他页' });
     expect(await store.get('session:one')).toMatchObject({ input: '本页' });
+    store.dispose();
+  });
+
+  it('一条冲突记录不会阻塞其它记录的落盘', async () => {
+    vi.useFakeTimers();
+    const base = new MemoryBrowserRecordStore();
+    const errors: unknown[] = [];
+    const store = new BufferedSessionRecordStore(base, undefined, error => errors.push(error));
+    await store.put('session:one', { entry: { revision: 2 }, input: '本页' });
+    await store.put('session:two', { entry: { revision: 1 }, input: '第二页' });
+    await base.put('session:one', { entry: { revision: 2 }, input: '其他页' });
+    await store.flush();
+    expect(String(errors[0])).toContain('其他页面');
+    expect(await base.get('session:two')).toMatchObject({ input: '第二页' });
+    store.dispose();
+  });
+
+  it('版本号倒退属于本机引用对齐，不会被当成并发冲突', async () => {
+    vi.useFakeTimers();
+    const base = new MemoryBrowserRecordStore();
+    const errors: unknown[] = [];
+    const store = new BufferedSessionRecordStore(base, undefined, error => errors.push(error));
+    await base.put('session:one', { entry: { revision: 20 }, input: '旧本机' });
+    await store.put('session:one', { entry: { revision: 3 }, input: '恢复的后端内容' });
+    await store.flush();
+    expect(errors).toEqual([]);
+    expect(await base.get('session:one')).toMatchObject({ input: '恢复的后端内容' });
     store.dispose();
   });
   it('连续更新重置三秒计时，正文与索引只写最新版本', async () => {

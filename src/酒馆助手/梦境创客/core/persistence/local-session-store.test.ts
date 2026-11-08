@@ -168,6 +168,42 @@ describe('local session persistence', () => {
     expect(statuses.at(-1)?.conflictSessionId).toBeUndefined();
   });
 
+  it('损坏的会话索引记录不会拖垮整个会话列表', async () => {
+    const { store, local, input } = await fixture();
+    await store.commit(input);
+    await store.backup();
+    // 模拟一条缺 entry 的脏索引：旧实现会在 value.entry.sessionId 处抛
+    // “Cannot read properties of undefined (reading 'sessionId')”，整个列表加载失败。
+    await local.put('session-index:card:broken', { dirty: true });
+    const metadata = await store.metadata('card');
+    expect(metadata.sessions.one.title).toBe('本地会话');
+    expect(await local.get('session-index:card:broken')).toBeUndefined();
+    expect((await store.bindings()).map(entry => entry.sessionId)).toEqual(['one']);
+  });
+
+  it('残缺 runtime 的正文记录不会锁死备份通道', async () => {
+    const { store, local, input, statuses } = await fixture();
+    await store.commit(input);
+    // 模拟缺 runtime 的脏正文：旧实现会走到 commit() 里读 input.runtime.sessionId，
+    // 抛 “Cannot read properties of undefined (reading 'sessionId')” 并让整批备份永久失败。
+    await local.put('session:card:broken', {
+      dirty: true,
+      entry: { bindingId: 'card', revision: 1, sessionId: 'broken', title: '坏会话' },
+      input: {},
+      remoteRevision: 0,
+    });
+    await local.put('session-index:card:broken', {
+      dirty: true,
+      entry: { bindingId: 'card', revision: 1, sessionId: 'broken', title: '坏会话' },
+      remoteRevision: 0,
+    });
+    await store.backup();
+    expect(statuses.at(-1)?.error).toBeUndefined();
+    // 正常会话照常备份成功，坏记录被跳过。
+    expect(statuses.at(-1)?.pending).toBe(0);
+    expect(await local.get('session-index:card:broken')).toMatchObject({ dirty: false });
+  });
+
   it('本地写入失败会明确拒绝保存', async () => {
     const { store, input, local, files } = await fixture();
     vi.spyOn(local, 'update').mockRejectedValue(new Error('quota'));

@@ -1,3 +1,4 @@
+import { MCP_TOOL_NAME_PREFIX } from '../../core/mcp/config';
 import type { SessionUiItem } from '../../core/session/types';
 import { resolveWebsiteFavicon } from './website-favicon';
 
@@ -339,6 +340,10 @@ function descriptorFor(item: SessionUiItem): ToolDescriptor {
   const name = item.toolName ?? 'tool';
   const known = TOOL_DESCRIPTORS[name];
   if (known) return known;
+  if (name.startsWith(MCP_TOOL_NAME_PREFIX)) {
+    const toolName = name.split('__').slice(2).join('__') || name;
+    return { icon: 'fa-solid fa-network-wired', kind: 'generic', title: `MCP · ${toolName}`, tone: 'info' };
+  }
   return {
     icon: item.providerTool ? 'fa-solid fa-cloud' : 'fa-solid fa-puzzle-piece',
     kind: item.providerTool ? 'web' : 'generic',
@@ -926,6 +931,24 @@ function specializedPresentation(
   return undefined;
 }
 
+/** MCP 工具返回的是任意服务器内容，这里只做保守的纯文本预览。 */
+function mcpPresentation(item: SessionUiItem, output: JsonRecord): Partial<ToolPresentation> {
+  const body = text(output, 'text') ?? '';
+  const server = text(output, 'server');
+  const tool = text(output, 'tool') ?? item.toolName ?? '';
+  return {
+    expandable: body.split(/\r?\n/u).length > 6,
+    preview: body ? { content: body, mode: 'text' } : undefined,
+    previewLabel: '返回内容',
+    rows: [
+      ...(server ? [{ icon: 'fa-solid fa-network-wired', label: server, meta: '服务器' }] : []),
+      ...(tool ? [{ icon: 'fa-solid fa-screwdriver-wrench', label: tool, meta: '工具' }] : []),
+    ],
+    summary: body ? compactLine(body, 'MCP 工具已返回') : 'MCP 工具已返回',
+    tone: 'info',
+  };
+}
+
 export function buildToolPresentation(item: SessionUiItem): ToolPresentation {
   const descriptor = descriptorFor(item);
   const inputValue = parsePayload(item.toolInput);
@@ -979,6 +1002,8 @@ export function buildToolPresentation(item: SessionUiItem): ToolPresentation {
       metrics: summary ? [{ label: '摘要字符', value: String(summary.length) }] : [],
       summary: '旧对话与工具链已压缩整理',
     };
+  } else if (item.toolName?.startsWith(MCP_TOOL_NAME_PREFIX)) {
+    details = mcpPresentation(item, output);
   }
   return {
     ...descriptor,

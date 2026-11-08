@@ -73,6 +73,12 @@ export const AGENT_TOOL_GROUPS = [
     label: '上下文',
     tools: [{ id: 'compact_context', label: '压缩上下文', readonly: false }],
   },
+  {
+    description: '调用“设置 → MCP”中已启用的外部 MCP 服务器工具；具体工具随服务器配置动态变化。',
+    id: 'mcp',
+    label: 'MCP 工具',
+    tools: [{ id: 'mcp_tools', label: '使用 MCP 工具', readonly: false }],
+  },
 ] as const;
 
 export type AgentToolGroup = (typeof AGENT_TOOL_GROUPS)[number];

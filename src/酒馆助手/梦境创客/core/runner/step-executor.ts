@@ -5,9 +5,9 @@ import {
   type ProviderInterfaceType,
   type ProviderRuntime,
 } from '../provider-probe';
-import { normalizeProviderFailure } from '../provider/provider-failure';
-import { withProviderModelRuntime, type ApiModel, type ApiProvider } from '../provider/provider-config';
 import { takeDeepSeekWebSearchResult } from '../provider/deepseek-responses-adapter';
+import { withProviderModelRuntime, type ApiModel, type ApiProvider } from '../provider/provider-config';
+import { normalizeProviderFailure } from '../provider/provider-failure';
 import type { RunnerTool } from './tools';
 
 export type RunnerToolCall = {
@@ -359,6 +359,10 @@ export class ProviderModelStepExecutor implements ModelStepExecutor {
   ) {}
 
   async execute(request: ModelStepRequest): Promise<ModelStepResult> {
+    // 配置损坏时宁可本地报错，也不要把空模型请求打到上游（会被中转站当成非法请求）。
+    if (!this.model.modelId.trim()) {
+      throw new Error('当前模型的模型ID为空。请在「设置 → API」里补全该模型的模型ID，或回到会话重新选择模型。');
+    }
     try {
       const modelSettings = this.model.modelSettings;
       const reasoningEffort = request.modelSettings?.reasoningEffort ?? 'auto';

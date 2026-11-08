@@ -1,11 +1,13 @@
 <template>
-  <article v-if="summary" class="dca-operation-diff-card">
+  <article v-if="summary || canRedo" class="dca-operation-diff-card">
     <header>
       <button class="dca-operation-summary" type="button" :aria-expanded="expanded" @click="expanded = !expanded">
         <span class="dca-operation-icon"><i class="fa-regular fa-square-plus" aria-hidden="true"></i></span>
         <span>
-          <strong>已变更 {{ summary.files }} 个文件</strong>
-          <small><b>+{{ summary.addedLines }}</b><em>-{{ summary.removedLines }}</em></small>
+          <strong v-if="summary">已变更 {{ summary.files }} 个文件</strong>
+          <strong v-else>本轮修改已回退</strong>
+          <small v-if="summary"><b>+{{ summary.addedLines }}</b><em>-{{ summary.removedLines }}</em></small>
+          <small v-else>文件已恢复到本轮开始前的状态</small>
         </span>
         <i :class="expanded ? 'fa-solid fa-chevron-up' : 'fa-solid fa-chevron-down'" aria-hidden="true"></i>
       </button>
@@ -16,11 +18,13 @@
         <button v-if="canUndo" type="button" :disabled="state.busy" @click="action(() => runtime.undo())">
           撤销 <i class="fa-solid fa-rotate-left" aria-hidden="true"></i>
         </button>
-        <button class="dca-operation-review" type="button" @click="openDiff(files[0]?.path)">审阅</button>
+        <button v-if="summary" class="dca-operation-review" type="button" @click="openDiff(files[0]?.path)">
+          审阅
+        </button>
       </div>
     </header>
 
-    <template v-if="expanded">
+    <template v-if="expanded && summary">
       <div class="dca-operation-diff-files">
         <button v-for="file in visibleFiles" :key="file.id" type="button" @click="openDiff(file.path)">
           <span>
@@ -64,9 +68,12 @@ const records = computed(() => {
   const ids = new Set(turn.operationIds);
   return state.value.active?.operationLog?.records.filter(record => ids.has(record.operationId)) ?? [];
 });
-const files = computed(() => buildOperationDiffFiles(records.value));
+// 只统计「当前仍然生效」的操作：回退成功后这些记录变成 undone，
+// 卡片必须随之清空，否则界面仍显示「已变更 N 个文件」，看起来像回退没生效。
+const activeRecords = computed(() => records.value.filter(record => record.state === 'applied'));
+const files = computed(() => buildOperationDiffFiles(activeRecords.value));
 const visibleFiles = computed(() => (showAll.value ? files.value : files.value.slice(0, 3)));
-const canUndo = computed(() => records.value.some(record => record.state === 'applied' && record.undoable));
+const canUndo = computed(() => activeRecords.value.some(record => record.undoable));
 const canRedo = computed(() => {
   const redoIds = new Set(latestTurn.value?.redoOperationIds ?? []);
   return records.value.some(record => redoIds.has(record.operationId) && record.state === 'undone' && record.undoable);

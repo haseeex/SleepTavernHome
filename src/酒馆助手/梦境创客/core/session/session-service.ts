@@ -3,13 +3,14 @@ import { klona } from 'klona';
 import { boundedWait } from '../async';
 import { projectCardWorkspace } from '../mapping/card-workspace-mapper';
 import type { CardWorkspaceState } from '../mapping/types';
+import { isMcpToolName } from '../mcp/config';
 import { createWorkspaceOperationRecord } from '../operations/file-operation';
 import { WorkspaceOperationLog } from '../operations/operation-log';
 import {
-  executeOperationReplay,
-  planOperationReplay,
-  type OperationReplayConflict,
-  type OperationReplayDirection,
+    executeOperationReplay,
+    planOperationReplay,
+    type OperationReplayConflict,
+    type OperationReplayDirection,
 } from '../operations/operation-replayer';
 import { OperationRecoveryCoordinator, type OperationRecoveryStore } from '../operations/recovery-store';
 import type { AgentConfiguration } from '../persistence/builtin-agent';
@@ -27,14 +28,14 @@ import { createPresetRunnerTools } from '../runner/preset-tools';
 import { createProjectRunnerTools } from '../runner/project-tools';
 import { recoverPendingRunnerStep } from '../runner/recovery';
 import type {
-  ModelStepExecutor,
-  RunnerToolCall,
-  RunnerToolInputDelta,
-  RunnerToolInputStart,
+    ModelStepExecutor,
+    RunnerToolCall,
+    RunnerToolInputDelta,
+    RunnerToolInputStart,
 } from '../runner/step-executor';
 import { createTavernChatRunnerTools } from '../runner/tavern-chat-tools';
 import { isAgentToolId } from '../runner/tool-catalog';
-import { createWorkspaceRunnerTools, type ToolConfirmation } from '../runner/tools';
+import { createWorkspaceRunnerTools, type RunnerTool, type ToolConfirmation } from '../runner/tools';
 import { createWorldbookRunnerTools } from '../runner/worldbook-tools';
 import type { AgentSkill } from '../skills/types';
 import type { TavernBridge } from '../tavern/bridge';
@@ -51,24 +52,24 @@ import { TavernWorkspaceLiveSource } from '../workspace/tavern-workspace-source'
 import type { WorkspaceFile } from '../workspace/types';
 import type { SessionAttachmentStore } from './attachment-store';
 import {
-  attachmentSummary,
-  storeSessionAttachments,
-  userContentWithAttachments,
-  type SessionAttachmentInput,
-  type StoredSessionAttachment,
+    attachmentSummary,
+    storeSessionAttachments,
+    userContentWithAttachments,
+    type SessionAttachmentInput,
+    type StoredSessionAttachment,
 } from './attachments';
 import { defaultPresetValues } from './prompt';
 import { globalAgentTaskLock, type GlobalAgentTaskLock } from './task-lock';
 import type {
-  ManualEditGroup,
-  PersistedSessionRuntime,
-  SessionAgentConfiguration,
-  SessionLifecycleStatus,
-  SessionMode,
-  SessionModelControls,
-  SessionScope,
-  SessionUiItem,
-  SessionView,
+    ManualEditGroup,
+    PersistedSessionRuntime,
+    SessionAgentConfiguration,
+    SessionLifecycleStatus,
+    SessionMode,
+    SessionModelControls,
+    SessionScope,
+    SessionUiItem,
+    SessionView,
 } from './types';
 
 type SessionServiceOptions = {
@@ -79,6 +80,8 @@ type SessionServiceOptions = {
   executor: ModelStepExecutor;
   lock?: GlobalAgentTaskLock;
   maxModelSteps?: number;
+  /** 当前 MCP 服务器缓存出的工具；会话构建是同步的，不能等待网络。 */
+  mcpTools?: (approvalMode: () => 'full' | 'manual' | 'yolo') => RunnerTool[];
   mode?: SessionMode;
   modelSelection?: ModelSelection;
   mountedWorldbooks?: Set<string>;
@@ -196,6 +199,7 @@ export class CardAgentSessionService {
   private contextWindow: number;
   private executor: ModelStepExecutor;
   private readonly lock: GlobalAgentTaskLock;
+  private readonly mcpTools?: (approvalMode: () => 'full' | 'manual' | 'yolo') => RunnerTool[];
   private maxModelSteps: number;
   private readonly now: () => number;
   private readonly onPersist?: SessionServiceOptions['onPersist'];
@@ -269,6 +273,7 @@ export class CardAgentSessionService {
     this.executor = options.executor;
     this.headerMessageCount = restored?.runtime.headerMessageCount ?? compiled.messages.length;
     this.lock = options.lock ?? globalAgentTaskLock;
+    this.mcpTools = options.mcpTools;
     this.maxModelSteps = options.maxModelSteps ?? DEFAULT_MAX_MODEL_STEPS;
     this.manualEditGroup = restored?.runtime.manualEditGroup ? klona(restored.runtime.manualEditGroup) : undefined;
     this.operationLog = new WorkspaceOperationLog(restored?.runtime.operationLog);
@@ -396,6 +401,10 @@ export class CardAgentSessionService {
         ? {
             conflicts: klona(this.pendingOperationReplay.conflicts),
             direction: this.pendingOperationReplay.direction,
+            messageId:
+              this.pendingOperationReplay.after?.kind === 'undo-message'
+                ? this.pendingOperationReplay.after.messageId
+                : undefined,
             turnId: this.pendingOperationReplay.turnId,
           }
         : undefined,
@@ -915,24 +924,27 @@ export class CardAgentSessionService {
   async undoToUserMessage(messageId: string): Promise<SessionView> {
     this.assertHistoryRestoreAllowed();
     await this.finalizeManualEdits();
-    const latestVisible = [...this.ui].reverse().find(item => !item.hidden && item.kind !== 'status');
+    const latestVisible = this.lastVisibleMessage();
     const user = this.ui.find(item => item.id === messageId && item.kind === 'user' && !item.hidden);
     if (!user?.checkpointId) throw new Error('该用户消息当前不能回退。');
     if (latestVisible?.checkpointId !== user.checkpointId) throw new Error('只能回退最新一轮消息。');
     const records = this.operationLog.recordsForTurn(user.checkpointId).filter(record => record.state === 'applied');
     if (!this.repository) throw new Error('实时文件工作区尚未初始化。');
     const plan = await planOperationReplay(this.repository, records, 'undo');
-    if (plan.conflicts.length > 0) {
+    // 文件只是漂移（刷新后重新投影、外部重写、已不存在）时直接强制恢复，
+    // 不再用弹窗拦住用户——否则「回退本轮修改」在刷新过一次后永远用不了。
+    const hard = plan.conflicts.filter(conflict => !conflict.soft);
+    if (hard.length > 0) {
       this.pendingOperationReplay = {
         after: { kind: 'undo-message', messageId },
-        conflicts: plan.conflicts,
+        conflicts: hard,
         direction: 'undo',
         turnId: user.checkpointId,
       };
       this.notify();
       return this.view();
     }
-    await this.replayTurn(user.checkpointId, 'undo', [], false);
+    await this.replayTurn(user.checkpointId, 'undo', [], false, plan.conflicts.length > 0);
     return this.finishMessageUndo(messageId, user.checkpointId);
   }
 
@@ -955,10 +967,36 @@ export class CardAgentSessionService {
       pending.direction,
       pending.conflicts.map(item => item.operationId),
       false,
+      true,
     );
     if (pending.after?.kind === 'undo-message') return this.finishMessageUndo(pending.after.messageId, pending.turnId);
     await this.persist();
     return this.view();
+  }
+
+  /**
+   * 文件已发生变化、无法安全回滚时，只回退对话层：丢弃本轮上下文与输出，
+   * 文件保持当前内容。用户点「回退本轮修改」的核心诉求是重来这一轮，
+   * 不应该因为文件冲突就整个操作无效。
+   */
+  async discardTurnWithoutFileRestore(messageId: string): Promise<SessionView> {
+    this.assertHistoryRestoreAllowed();
+    await this.finalizeManualEdits();
+    const user = this.ui.find(item => item.id === messageId && item.kind === 'user' && !item.hidden);
+    if (!user?.checkpointId) throw new Error('该用户消息当前不能回退。');
+    const turnId = user.checkpointId;
+    const records = this.operationLog.recordsForTurn(turnId).filter(record => record.state === 'applied');
+    if (records.length > 0) {
+      this.operationLog.markUndone(
+        turnId,
+        records.map(record => record.operationId),
+      );
+      this.warnings = [
+        ...new Set([...this.warnings, `本轮 ${records.length} 个文件改动未自动恢复，请到侧栏审阅并按需手动还原。`]),
+      ];
+    }
+    this.pendingOperationReplay = undefined;
+    return this.finishMessageUndo(messageId, turnId);
   }
 
   async writeWorkingFile(
@@ -1061,13 +1099,24 @@ export class CardAgentSessionService {
 
   async editUserMessage(messageId: string, content: string): Promise<void> {
     this.assertHistoryRestoreAllowed();
-    if (this.activeCheckpointId || this.ui.filter(item => !item.hidden).at(-1)?.id !== messageId) {
+    if (this.activeCheckpointId || this.lastVisibleMessage()?.id !== messageId) {
       throw new Error('请先回退本轮，再编辑待重发的消息。');
     }
     const item = this.ui.find(message => message.id === messageId && message.kind === 'user');
     if (!item) throw new Error(`用户消息不存在：${messageId}`);
     item.content = content;
     await this.persist();
+  }
+
+  /**
+   * 最后一条对话性可见项。
+   *
+   * ⚠️ 必须忽略 `status`：运行状态卡片（如「Agent配置已更新」）不属于任何一轮对话，
+   * 却常常排在消息之后。若按 `ui.at(-1)` 判断，回退后编辑保存会误报
+   * 「请先回退本轮」，重新发送按钮也会一直是灰的。
+   */
+  private lastVisibleMessage(): SessionUiItem | undefined {
+    return [...this.ui].reverse().find(item => !item.hidden && item.kind !== 'status');
   }
 
   /**
@@ -1328,12 +1377,15 @@ export class CardAgentSessionService {
     if (!latest.recoveryAvailable) throw new Error('本轮恢复记录不可用，不能安全撤销或重做。');
     if (!this.repository) throw new Error('实时文件工作区尚未初始化。');
     const plan = await planOperationReplay(this.repository, records, direction);
-    if (plan.conflicts.length > 0) {
-      this.pendingOperationReplay = { conflicts: plan.conflicts, direction, turnId: latest.turnId };
+    // 只有「缺可靠恢复记录」才是真正需要用户确认的硬冲突；
+    // 文件漂移（刷新后重新投影、外部重写）一律强制恢复，否则回退永远做不成。
+    const hard = plan.conflicts.filter(conflict => !conflict.soft);
+    if (hard.length > 0) {
+      this.pendingOperationReplay = { conflicts: hard, direction, turnId: latest.turnId };
       this.notify();
       return this.view();
     }
-    return this.replayTurn(latest.turnId, direction, []);
+    return this.replayTurn(latest.turnId, direction, [], true, plan.conflicts.length > 0);
   }
 
   private async replayTurn(
@@ -1341,6 +1393,7 @@ export class CardAgentSessionService {
     direction: OperationReplayDirection,
     skipOperationIds: string[],
     persist = true,
+    force = false,
   ): Promise<SessionView> {
     if (!this.repository) throw new Error('实时文件工作区尚未初始化。');
     const records = this.operationLog
@@ -1350,6 +1403,7 @@ export class CardAgentSessionService {
     try {
       const result = await executeOperationReplay({
         direction,
+        force,
         records,
         repository: this.repository,
         skipOperationIds,
@@ -1552,8 +1606,23 @@ export class CardAgentSessionService {
             this.renderPreviews[render.renderId] = klona(render);
           },
         }),
-      ].filter(tool => isAgentToolId(tool.name) && this.agentConfiguration.toolIds.includes(tool.name)),
+        ...(this.mcpTools && this.agentConfiguration.toolIds.includes('mcp_tools')
+          ? this.mcpTools(() => (this.mode === 'full' ? 'full' : this.mode === 'yolo' ? 'yolo' : 'manual'))
+          : []),
+      ].filter(tool =>
+        isMcpToolName(tool.name)
+          ? this.agentConfiguration.toolIds.includes('mcp_tools')
+          : isAgentToolId(tool.name) && this.agentConfiguration.toolIds.includes(tool.name),
+      ),
     });
+  }
+
+  /** MCP 工具列表变化后刷新空闲会话的工具集；运行中的轮次保持当前工具不变。 */
+  async refreshExternalTools(): Promise<void> {
+    if (!this.mcpTools || !this.runner) return;
+    if (this.activeCheckpointId || ['running', 'waiting-approval'].includes(this.status)) return;
+    this.buildRunner(this.runner.state.status, this.runner.state.pending);
+    await this.persist();
   }
 
   private assertManualResourceWrite(path: string): void {

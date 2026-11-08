@@ -1,26 +1,37 @@
 <template>
-  <div v-if="request" class="dca-modal-backdrop" role="presentation">
-    <section class="dca-modal dca-replay-dialog" role="dialog" aria-modal="true" aria-labelledby="dca-replay-title">
-      <header>
-        <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
-        <div>
-          <strong id="dca-replay-title">部分文件不能安全{{ request.direction === 'undo' ? '撤销' : '重做' }}</strong>
-          <span>这些文件在原操作后发生了变化。继续时会跳过它们，只处理其余操作。</span>
-        </div>
-      </header>
-      <ul>
-        <li v-for="conflict in request.conflicts" :key="conflict.operationId">
-          <code>{{ conflict.path }}</code><span>{{ conflict.reason }}</span>
-        </li>
-      </ul>
-      <footer>
-        <button type="button" @click="action(() => runtime.confirmOperationReplay(false))">不进行操作</button>
-        <button class="danger" type="button" @click="action(() => runtime.confirmOperationReplay(true))">
-          跳过冲突并继续
-        </button>
-      </footer>
-    </section>
-  </div>
+  <Teleport to="body">
+    <div v-if="request" class="dca-modal-backdrop" role="presentation">
+      <section class="dca-modal dca-replay-dialog" role="dialog" aria-modal="true" aria-labelledby="dca-replay-title">
+        <header>
+          <i class="fa-solid fa-triangle-exclamation" aria-hidden="true"></i>
+          <div>
+            <strong id="dca-replay-title">部分文件不能安全{{ request.direction === 'undo' ? '撤销' : '重做' }}</strong>
+            <span>这些文件在原操作后发生了变化。继续时会跳过它们，只处理其余操作。</span>
+          </div>
+        </header>
+        <ul>
+          <li v-for="conflict in request.conflicts" :key="conflict.operationId">
+            <code>{{ conflict.path }}</code><span>{{ conflict.reason }}</span>
+          </li>
+        </ul>
+        <footer>
+          <button type="button" @click="action(() => runtime.confirmOperationReplay(false))">取消（不改动任何内容）</button>
+          <button
+            v-if="request.direction === 'undo'"
+            type="button"
+            :disabled="!request.messageId"
+            :title="request.messageId ? '丢弃本轮对话与输出，文件保持当前内容' : ''"
+            @click="action(() => runtime.discardTurnWithoutFileRestore(request!.messageId!))"
+          >
+            仅回退对话
+          </button>
+          <button class="danger" type="button" @click="action(() => runtime.confirmOperationReplay(true))">
+            跳过冲突并继续
+          </button>
+        </footer>
+      </section>
+    </div>
+  </Teleport>
 </template>
 
 <script setup lang="ts">

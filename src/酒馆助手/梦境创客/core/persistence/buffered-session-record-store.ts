@@ -1,6 +1,11 @@
 import type { BrowserRecordIndex, BrowserRecordStore } from './browser-record-store';
 
-type PendingRecord = { value: unknown; index?: { key: string; value: unknown } };
+type PendingRecord = {
+  value: unknown;
+  index?: { key: string; value: unknown };
+  /** 已判定并发冲突：保留在内存供导出，但不再重试写入。 */
+  blocked?: boolean;
+};
 type Recovery = { storage: Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>; key: () => Promise<string> };
 
 /** 会话正文与索引一起延迟落盘；内存读取始终能看到最新版本。 */
@@ -148,25 +153,34 @@ export class BufferedSessionRecordStore implements BrowserRecordStore {
     const batch = [...this.pending];
     this.flushing = (async () => {
       for (const [key, row] of batch) {
-        await this.base.update(
-          key,
-          current => {
-            const previous = current as { entry?: { revision?: number }; input?: unknown } | undefined;
-            const next = row.value as { entry?: { revision?: number }; input?: unknown } | undefined;
-            if (
-              typeof previous?.entry?.revision === 'number' &&
-              typeof next?.entry?.revision === 'number' &&
-              (previous.entry.revision > next.entry.revision ||
-                (previous.entry.revision === next.entry.revision &&
-                  JSON.stringify(previous.input) !== JSON.stringify(next.input)))
-            ) {
-              throw new Error('会话已在其他页面更新，当前内容已保留，请导出后核对。');
-            }
-            return row.value;
-          },
-          row.index ? { key: row.index.key, project: () => row.index!.value } : undefined,
-        );
-        if (this.pending.get(key) === row) this.pending.delete(key);
+        // 已判定为并发冲突的记录继续留在内存里供用户导出，但不再反复写入、也不再拖累其它记录。
+        if (row.blocked) continue;
+        try {
+          await this.base.update(
+            key,
+            current => {
+              const previous = current as { entry?: { revision?: number }; input?: unknown } | undefined;
+              const next = row.value as { entry?: { revision?: number }; input?: unknown } | undefined;
+              // 只有「版本号相同但内容不同」才是真正的并发写入。版本号倒退是本机引用对齐
+              // （远端版本号回灌），由上层 remoteRevision 判定冲突，不能在这里锁死写入通道。
+              if (
+                typeof previous?.entry?.revision === 'number' &&
+                typeof next?.entry?.revision === 'number' &&
+                previous.entry.revision === next.entry.revision &&
+                JSON.stringify(previous.input) !== JSON.stringify(next.input)
+              ) {
+                throw new Error('会话已在其他页面更新，当前内容已保留，请导出后核对。');
+              }
+              return row.value;
+            },
+            row.index ? { key: row.index.key, project: () => row.index!.value } : undefined,
+          );
+          if (this.pending.get(key) === row) this.pending.delete(key);
+        } catch (error) {
+          // 单条失败不能中断整批：保留内存内容、只报一次错，否则每次备份都重复同一条错误。
+          row.blocked = true;
+          this.onError(error);
+        }
       }
     })().finally(() => {
       this.flushing = undefined;

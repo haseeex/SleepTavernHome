@@ -29,7 +29,9 @@
     "dump": "node dump_schema.ts",
     "sync": "node tavern_sync.mjs",
     "test:agent": "vitest run --config vitest.dream-card-agent.config.mts",
-    "check:agent": "pnpm run test:agent && tsc --project tsconfig.dream-card-agent.json --noEmit --pretty false && eslint \"src/酒馆助手/梦境创客/**/*.{ts,vue}\" \"vitest.dream-card-agent.config.mts\" --max-warnings 0"
+    "test:plugin": "node --test \"docs/梦境创客/本地调试/dream-card-agent/stdio-mcp.test.cjs\"",
+    "test:plugin:e2e": "node \"docs/梦境创客/本地调试/dream-card-agent/stdio-bridge.e2e.cjs\"",
+    "check:agent": "pnpm run test:agent && pnpm run test:plugin && tsc --project tsconfig.dream-card-agent.json --noEmit --pretty false && eslint \"src/酒馆助手/梦境创客/**/*.{ts,vue}\" \"vitest.dream-card-agent.config.mts\" --max-warnings 0"
   },
   "browserslist": [
     "defaults and partially supports es6-module"

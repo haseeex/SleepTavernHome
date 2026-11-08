@@ -78,7 +78,11 @@ const editArea = ref<HTMLTextAreaElement>();
 const lastUserMessageId = computed(
   () => [...(state.value.active?.ui ?? [])].reverse().find(item => item.kind === 'user')?.id,
 );
-const lastVisibleMessageId = computed(() => state.value.active?.ui.at(-1)?.id);
+// 忽略运行状态卡片：它不属于任何一轮对话，却常常排在消息之后。
+// 若按 ui.at(-1) 判断，「重新发送」会在有状态卡片时一直是灰的。
+const lastVisibleMessageId = computed(
+  () => [...(state.value.active?.ui ?? [])].reverse().find(item => item.kind !== 'status')?.id,
+);
 
 const canModifyHistory = computed(() =>
   Boolean(

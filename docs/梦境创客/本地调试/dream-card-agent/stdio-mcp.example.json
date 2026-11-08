@@ -1,0 +1,23 @@
+{
+  "_说明": "stdio 型 MCP 服务器清单。把 VSCode mcp.json 里 type=stdio 的条目整份粘贴进 servers 即可，http/sse 条目会被自动跳过。改完保存后刷新酒馆页面生效（配置每次请求都会重读）。",
+  "_timeoutMs": "插件等待子进程响应的上限（毫秒，5000~600000）。建议 60000，比浏览器「设置 → MCP → 请求超时」短，这样超时能报出具体环节。initialize 握手另有 180 秒宽限（npx 首次要下载包）。",
+  "_env提示": "有些 MCP 服务器自带内部超时且默认很短（如 mcp-searxng 只有 10 秒），并发请求时会误报 Network Error。用它的环境变量调大，见下方 searxng 示例。",
+  "servers": {
+    "searxng": {
+      "description": "自建 AI 隐私检索",
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-searxng"
+      ],
+      "timeoutMs": 60000,
+      "env": {
+        "SEARXNG_URL": "https://gem12.test:18080",
+        "SEARXNG_DEFAULT_SAFESEARCH": "0",
+        "NODE_USE_SYSTEM_CA": "1",
+        "SEARXNG_TIMEOUT_MS": "30000",
+        "FETCH_TIMEOUT_MS": "30000"
+      }
+    }
+  }
+}

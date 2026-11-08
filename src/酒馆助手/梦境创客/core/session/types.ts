@@ -110,6 +110,8 @@ export type SessionView = {
   operationReplay?: {
     conflicts: OperationReplayConflict[];
     direction: OperationReplayDirection;
+    /** 本次待回退的用户消息；存在时允许“仅回退对话”而不动文件。 */
+    messageId?: string;
     turnId: string;
   };
   preset: StructuredPreset;

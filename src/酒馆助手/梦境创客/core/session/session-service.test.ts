@@ -1,5 +1,6 @@
 import type { ModelMessage } from 'ai';
 import { describe, expect, it, vi } from 'vitest';
+import { defaultBuiltinAgentConfiguration } from '../persistence/builtin-agent';
 import type { StructuredPreset } from '../preset/compiler';
 import type { ModelStepExecutor, ModelStepRequest, ModelStepResult, RunnerToolCall } from '../runner/step-executor';
 import type { AgentSkill } from '../skills/types';
@@ -8,7 +9,6 @@ import { transactionState } from '../transaction/test-fixture';
 import { CardAgentSessionService } from './session-service';
 import { GlobalAgentTaskLock } from './task-lock';
 import type { PersistedSessionRuntime } from './types';
-import { defaultBuiltinAgentConfiguration } from '../persistence/builtin-agent';
 
 function step(toolCalls: RunnerToolCall[] = [], text = '完成啦'): ModelStepResult {
   const assistantMessages: ModelMessage[] = [
@@ -436,7 +436,26 @@ describe('card agent realtime session service', () => {
     expect((await adapter.read()).character.fields.description).toBe('第二版');
   });
 
-  it('Undo先模拟真实文件，外部编辑冲突时等待应用内确认并可跳过', async () => {
+  it('外部编辑造成的文件漂移不再拦截撤销，直接强制恢复', async () => {
+    const adapter = new MemoryCardStateAdapter(transactionState());
+    const service = await createService({
+      adapter,
+      executor: new QueueExecutor([step([writeDescription('Agent版本')]), step()]),
+      mode: 'full',
+    });
+    const original = transactionState().character.fields.description;
+    await service.send('修改');
+    const external = await adapter.read();
+    external.character.fields.description = '玩家外部编辑';
+    adapter.replaceExternal(external);
+    // 文件漂移属于软冲突：刷新后重新投影的世界书条目/临时文件内容必然与快照不一致，
+    // 若弹窗等待确认，「回退本轮修改」在刷新过一次后就永远用不了。
+    const undone = await service.undo();
+    expect(undone.operationReplay).toBeUndefined();
+    expect((await adapter.read()).character.fields.description).toBe(original);
+  });
+
+  it('缺少可靠恢复记录时仍然等待用户确认', async () => {
     const adapter = new MemoryCardStateAdapter(transactionState());
     const service = await createService({
       adapter,
@@ -444,15 +463,11 @@ describe('card agent realtime session service', () => {
       mode: 'full',
     });
     await service.send('修改');
-    const external = await adapter.read();
-    external.character.fields.description = '玩家外部编辑';
-    adapter.replaceExternal(external);
+    // 缺可靠恢复记录属于硬冲突：必须由用户决定，不能自动覆盖。
+    const log = (service as unknown as { operationLog: { records: Array<{ undoable: boolean }> } }).operationLog;
+    for (const record of log.records) record.undoable = false;
     const waiting = await service.undo();
-    expect(waiting.operationReplay?.conflicts).toMatchObject([
-      { path: '/character/definition/description.md', reason: '文件在原操作之后又发生了变化。' },
-    ]);
-    await service.confirmOperationReplay(true);
-    expect((await adapter.read()).character.fields.description).toBe('玩家外部编辑');
+    expect(waiting.operationReplay?.conflicts.length).toBeGreaterThan(0);
   });
 
   it('回退最新用户消息时同时撤销文件操作、保留可编辑用户消息并允许重发', async () => {
@@ -603,5 +618,35 @@ describe('card agent realtime session service', () => {
     );
     expect(restoredUi.find(item => item.id === 'second-assistant')?.checkpointId).toBe('turn:second');
     expect(restoredUi.find(item => item.id === 'standalone-status')?.checkpointId).toBeUndefined();
+  });
+
+  it('末尾有运行状态卡片时，回退后仍能编辑并保存待重发内容', async () => {
+    const adapter = new MemoryCardStateAdapter(transactionState());
+    let runtime: PersistedSessionRuntime | undefined;
+    const service = await createService({
+      adapter,
+      executor: new QueueExecutor([step([writeDescription('第一版')]), step([], '完成')]),
+      onPersist: async value => {
+        runtime = structuredClone(value);
+      },
+    });
+    await service.send('原始要求', 'edit-me');
+    if (!runtime) throw new Error('测试会话没有持久化。');
+    // 运行状态卡片不属于任何一轮对话，却排在消息之后（「Agent配置已更新」就是这种）。
+    runtime.ui.push({ at: 99, content: 'Agent配置已更新', id: 'trailing-status', kind: 'status', status: 'completed' });
+
+    const restored = await CardAgentSessionService.restore(
+      {
+        adapter,
+        agentConfiguration: defaultBuiltinAgentConfiguration(),
+        executor: new QueueExecutor([]),
+        lock: new GlobalAgentTaskLock(),
+      },
+      runtime,
+    );
+    await restored.undoToUserMessage('edit-me');
+    // 旧实现按 ui.at(-1) 判断，末尾状态卡片会让这里误报「请先回退本轮」。
+    await expect(restored.editUserMessage('edit-me', '改写后的要求')).resolves.toBeUndefined();
+    expect(restored.view().ui.find(item => item.id === 'edit-me')?.content).toBe('改写后的要求');
   });
 });

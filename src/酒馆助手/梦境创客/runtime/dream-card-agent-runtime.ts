@@ -1,11 +1,15 @@
 import { klona } from 'klona';
 import { materializeCardWorkspace, projectCardWorkspace } from '../core/mapping/card-workspace-mapper';
 import type { CardWorkspaceState } from '../core/mapping/types';
+import { tavernRequestHeaders } from '../core/mcp/client';
+import { newMcpServerId, normalizeMcpServer, STDIO_BRIDGE_SERVERS_URL, stdioBridgeUrl } from '../core/mcp/config';
+import { McpToolManager } from '../core/mcp/manager';
+import type { McpServerConfig, McpServerStatus } from '../core/mcp/types';
 import { IndexedDbOperationRecoveryStore } from '../core/operations/recovery-store';
 import {
-  browserAccountNamespace,
-  IndexedDbBrowserRecordStore,
-  type BrowserRecordStore,
+    browserAccountNamespace,
+    IndexedDbBrowserRecordStore,
+    type BrowserRecordStore,
 } from '../core/persistence/browser-record-store';
 import { BufferedSessionRecordStore } from '../core/persistence/buffered-session-record-store';
 import { CharacterMetadataStore } from '../core/persistence/character-store';
@@ -16,47 +20,47 @@ import { LocalSessionStore, type SessionBackupStatus } from '../core/persistence
 import { SessionPersistenceCoordinator } from '../core/persistence/session-persistence';
 import { SessionRevisionStore } from '../core/persistence/session-store';
 import {
-  DEFAULT_AGENT_CONFIGURATION_ID,
-  normalizeMaxModelSteps,
-  TavernAgentSettingsStore,
-  type AgentConfiguration,
-  type AgentSettingsStore,
-  type CharacterStoreReference,
-  type FloatingButtonAnchor,
-  type FloatingButtonOffset,
-  type SessionIndexEntry,
+    DEFAULT_AGENT_CONFIGURATION_ID,
+    normalizeMaxModelSteps,
+    TavernAgentSettingsStore,
+    type AgentConfiguration,
+    type AgentSettingsStore,
+    type CharacterStoreReference,
+    type FloatingButtonAnchor,
+    type FloatingButtonOffset,
+    type SessionIndexEntry,
 } from '../core/persistence/settings';
 import {
-  DreamCreatorWorkspaceFileStore,
-  GLOBAL_WORKSPACE_BINDING_ID,
-  type CharacterFileStorageSummary,
+    DreamCreatorWorkspaceFileStore,
+    GLOBAL_WORKSPACE_BINDING_ID,
+    type CharacterFileStorageSummary,
 } from '../core/persistence/workspace-file-store';
 import { cloneStructuredPreset, compilePreset, DEFAULT_PRESET, type StructuredPreset } from '../core/preset/compiler';
 import { HtmlProjectCompiler, type HtmlProjectCheck } from '../core/projects/html-project';
 import { builtinModelTemplates, DEFAULT_CONTEXT_WINDOW, matchModelTemplates } from '../core/provider/model-catalog';
 import {
-  createApiModel,
-  createApiProvider,
-  exportApiProviderBundle,
-  findSelectedModel,
-  listProviderModels,
-  parseApiProviderBundle,
-  revealApiModel,
-  revealApiProvider,
-  updateApiModel,
-  updateApiProvider,
-  type ApiModel,
-  type ApiModelInput,
-  type ApiProvider,
-  type ApiProviderInput,
-  type ModelSelection,
+    createApiModel,
+    createApiProvider,
+    exportApiProviderBundle,
+    findSelectedModel,
+    listProviderModels,
+    parseApiProviderBundle,
+    revealApiModel,
+    revealApiProvider,
+    updateApiModel,
+    updateApiProvider,
+    type ApiModel,
+    type ApiModelInput,
+    type ApiProvider,
+    type ApiProviderInput,
+    type ModelSelection,
 } from '../core/provider/provider-config';
 import { normalizeProviderFailure } from '../core/provider/provider-failure';
 import { measureContext } from '../core/runner/context';
 import {
-  ProviderModelStepExecutor,
-  UnavailableModelStepExecutor,
-  type ModelStepExecutor,
+    ProviderModelStepExecutor,
+    UnavailableModelStepExecutor,
+    type ModelStepExecutor,
 } from '../core/runner/step-executor';
 import { isAgentToolId } from '../core/runner/tool-catalog';
 import type { ToolConfirmation } from '../core/runner/tools';
@@ -66,11 +70,11 @@ import { defaultPresetValues } from '../core/session/prompt';
 import { CardAgentSessionService } from '../core/session/session-service';
 import { GlobalAgentTaskLock } from '../core/session/task-lock';
 import type {
-  PersistedSessionRuntime,
-  SessionLifecycleStatus,
-  SessionMode,
-  SessionModelControls,
-  SessionView,
+    PersistedSessionRuntime,
+    SessionLifecycleStatus,
+    SessionMode,
+    SessionModelControls,
+    SessionView,
 } from '../core/session/types';
 import { BUILTIN_CARD_WORKSPACE_SKILL } from '../core/skills/builtin-card-workspace';
 import { GlobalSkillStore } from '../core/skills/global-skill-store';
@@ -80,9 +84,9 @@ import type { AgentSkill } from '../core/skills/types';
 import { createGlobalTavernBridge, type TavernBridge } from '../core/tavern/bridge';
 import { createGlobalTavernChatBridge, type TavernChatBridge } from '../core/tavern/chat-bridge';
 import {
-  GLOBAL_SESSION_BINDING_ID,
-  readCharacterTavernState,
-  readGlobalTavernState,
+    GLOBAL_SESSION_BINDING_ID,
+    readCharacterTavernState,
+    readGlobalTavernState,
 } from '../core/tavern/global-state-reader';
 import { ProductionCardStateAdapter } from '../core/tavern/production-adapter';
 import type { CardStateAdapter } from '../core/transaction/adapter';
@@ -116,6 +120,8 @@ export type DreamCardAgentRuntimeState = {
   floatingButtonOffset: FloatingButtonOffset;
   globalSessions: SessionIndexEntry[];
   loadedSessionIds: string[];
+  mcpServers: McpServerConfig[];
+  mcpStatuses: McpServerStatus[];
   onboardingDone: boolean;
   providers: ApiProvider[];
   presetProfiles: StructuredPreset[];
@@ -185,6 +191,7 @@ export class DreamCardAgentRuntime {
   private readonly globalSkillStore: GlobalSkillStore;
   private readonly remoteBuiltinSkillStore?: RemoteBuiltinSkillStore;
   private readonly lock = new GlobalAgentTaskLock();
+  private readonly mcpManager: McpToolManager;
   private readonly operationRecoveryStore = new IndexedDbOperationRecoveryStore();
   private readonly log: PageDebugLog;
   private readonly now: () => number;
@@ -209,6 +216,8 @@ export class DreamCardAgentRuntime {
   private skillIndexSignature = '';
   private skillLoadPromise?: Promise<void>;
   private state: DreamCardAgentRuntimeState;
+  /** 构造函数里 state 赋值前也可能收到 MCP 管理器回调，用它拦住。 */
+  private stateReady = false;
 
   constructor(options: RuntimeOptions = {}) {
     const bridge = options.bridge ?? createGlobalTavernBridge();
@@ -290,12 +299,20 @@ export class DreamCardAgentRuntime {
         },
       );
     this.globalSkillStore = new GlobalSkillStore(this.fileClient, this.settingsStore, this.now);
+    this.mcpManager = new McpToolManager({
+      onChanged: () => {
+        if (!this.stateReady) return;
+        this.state.mcpStatuses = this.mcpManager.statuses();
+        this.emit();
+      },
+    });
     const resourceBaseUrl = options.resourceBaseUrl ?? configuredResourceBaseUrl;
     this.resourceBaseUrl = resourceBaseUrl;
     this.remoteBuiltinSkillStore = resourceBaseUrl
       ? new RemoteBuiltinSkillStore(resourceBaseUrl, this.fileClient, this.settingsStore, this.now)
       : undefined;
     const settings = this.settingsStore.load();
+    this.mcpManager.configure(settings.mcpServers);
     this.state = {
       approvalMode: settings.approvalMode,
       interfaceModes: klona(settings.interfaceModes),
@@ -319,6 +336,8 @@ export class DreamCardAgentRuntime {
       floatingButtonOffset: settings.floatingButtonOffset,
       globalSessions: [],
       loadedSessionIds: [],
+      mcpServers: settings.mcpServers,
+      mcpStatuses: this.mcpManager.statuses(),
       onboardingDone: settings.onboardingDone,
       providers: settings.providers,
       presetProfiles: settings.presetProfiles,
@@ -329,6 +348,7 @@ export class DreamCardAgentRuntime {
       sessionStatuses: {},
       warnings: [],
     };
+    this.stateReady = true;
     this.settingsUnsubscribe = this.settingsStore.subscribe?.(() => {
       this.reloadSettingsState();
       // 本页延迟保存模型选项时，角色索引内容已经由当前Runtime掌握；
@@ -349,6 +369,18 @@ export class DreamCardAgentRuntime {
         ];
         this.emit();
       });
+    }
+    // 页面刷新后自动恢复已启用服务器的工具列表；失败只记录到状态，不打断启动。
+    if (settings.mcpServers.some(server => server.enabled)) {
+      void this.mcpManager
+        .refresh()
+        .then(() => {
+          this.state.mcpStatuses = this.mcpManager.statuses();
+          this.emit();
+        })
+        .catch(error => {
+          this.addDebug('warn', `MCP 服务器连接失败：${error instanceof Error ? error.message : String(error)}`);
+        });
     }
   }
 
@@ -581,6 +613,7 @@ export class DreamCardAgentRuntime {
         contextWindow: resolvedModel ? this.modelContextWindow(resolvedModel.model) : DEFAULT_CONTEXT_WINDOW,
         lock: this.lock,
         maxModelSteps: this.state.maxModelSteps,
+        mcpTools: approvalMode => this.mcpManager.tools({ approvalMode }),
         mode: input.mode ?? this.state.approvalMode,
         modelSelection,
         mountedWorldbooks,
@@ -688,6 +721,7 @@ export class DreamCardAgentRuntime {
           contextWindow: resolvedModel ? this.modelContextWindow(resolvedModel.model) : DEFAULT_CONTEXT_WINDOW,
           lock: this.lock,
           maxModelSteps: this.state.maxModelSteps,
+          mcpTools: approvalMode => this.mcpManager.tools({ approvalMode }),
           mountedWorldbooks,
           onCharacterChanged:
             scope === 'global'
@@ -802,6 +836,7 @@ export class DreamCardAgentRuntime {
           contextWindow: resolvedModel ? this.modelContextWindow(resolvedModel.model) : DEFAULT_CONTEXT_WINDOW,
           lock: this.lock,
           maxModelSteps: this.state.maxModelSteps,
+          mcpTools: approvalMode => this.mcpManager.tools({ approvalMode }),
           mountedWorldbooks,
           now: this.now,
           canWriteNonCharacterResources: () => this.canWriteNonCharacterResources(),
@@ -884,6 +919,7 @@ export class DreamCardAgentRuntime {
           contextWindow: resolvedModel ? this.modelContextWindow(resolvedModel.model) : DEFAULT_CONTEXT_WINDOW,
           lock: this.lock,
           maxModelSteps: this.state.maxModelSteps,
+          mcpTools: approvalMode => this.mcpManager.tools({ approvalMode }),
           mountedWorldbooks,
           onCharacterChanged: async () => {
             if (this.bridge.getCurrentCharacterId()) {
@@ -1008,6 +1044,10 @@ export class DreamCardAgentRuntime {
 
   async confirmOperationReplay(continueWithoutConflicts: boolean): Promise<SessionView> {
     return this.runActiveView(service => service.confirmOperationReplay(continueWithoutConflicts));
+  }
+
+  async discardTurnWithoutFileRestore(messageId: string): Promise<SessionView> {
+    return this.runActiveView(service => service.discardTurnWithoutFileRestore(messageId));
   }
 
   async resend(messageId: string): Promise<SessionView> {
@@ -1749,7 +1789,152 @@ export class DreamCardAgentRuntime {
     }
   }
 
+  /** 新建或更新一台 MCP 服务器；保存后立即连接并刷新工具列表。 */
+  async saveMcpServer(input: {
+    enabled?: boolean;
+    headers?: Array<{ name: string; value: string }>;
+    id?: string;
+    name?: string;
+    timeoutMs?: number;
+    transport?: string;
+    url: string;
+  }): Promise<void> {
+    const settings = this.settingsStore.load();
+    const normalized = normalizeMcpServer({ ...input, id: input.id ?? newMcpServerId() });
+    if (!normalized) {
+      throw new Error('MCP 服务器地址无效：请填 http/https 地址，或服务端插件的 /api/plugins/... 路径。');
+    }
+    if (settings.mcpServers.some(item => item.id !== normalized.id && item.name === normalized.name)) {
+      throw new Error(`MCP 服务器名称已存在：${normalized.name}`);
+    }
+    const exists = settings.mcpServers.some(item => item.id === normalized.id);
+    settings.mcpServers = exists
+      ? settings.mcpServers.map(item => (item.id === normalized.id ? normalized : item))
+      : [...settings.mcpServers, normalized];
+    await this.settingsStore.save(settings);
+    this.mcpManager.configure(settings.mcpServers);
+    this.reloadSettingsState();
+    await this.run(async () => {
+      await this.mcpManager.refreshServer(normalized.id);
+      await this.refreshSessionMcpTools();
+    });
+  }
+
+  /**
+   * 从酒馆服务端插件导入 stdio MCP 服务器。
+   * 命令与 env 只存在于服务器本地文件（stdio-mcp.json），浏览器拿到的是桥接端点。
+   */
+  async importStdioMcpServers(): Promise<{ added: number; skipped: number }> {
+    const current = this.settingsStore.load();
+    // 官方头已含 X-CSRF-TOKEN；用户已配的 Authorization 覆盖它（酒馆开了 basicAuthMode 时必需）。
+    const authorization = current.mcpServers
+      .flatMap(server => server.headers)
+      .find(header => header.name.toLowerCase() === 'authorization' && header.value.trim() !== '');
+    const requestHeaders: Record<string, string> = {
+      ...tavernRequestHeaders(STDIO_BRIDGE_SERVERS_URL),
+      accept: 'application/json',
+    };
+    if (authorization) requestHeaders[authorization.name] = authorization.value;
+    let payload: { error?: string; servers?: unknown };
+    try {
+      const response = await fetch(STDIO_BRIDGE_SERVERS_URL, {
+        credentials: 'include',
+        headers: requestHeaders,
+        mode: 'cors',
+        redirect: 'error',
+      });
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`);
+      }
+      payload = (await response.json()) as { error?: string; servers?: unknown };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const authHint = /HTTP (401|403|429)/u.test(message)
+        ? '\n酒馆开启了访问密码（basicAuthMode）：请先新建任意一台 stdio 服务器并在“请求标头”里填入 Authorization（可用“Basic 认证快捷填入”），保存后再导入，新服务器会自动继承这个头。'
+        : '';
+      throw new Error(
+        `无法读取服务端插件的 stdio 服务器清单：${message}。请确认酒馆已启用 dream-card-agent 服务端插件。${authHint}`,
+      );
+    }
+    const remote = Array.isArray(payload.servers) ? payload.servers : [];
+    if (remote.length === 0) {
+      throw new Error(
+        payload.error ??
+          '服务端插件里还没有 stdio MCP 服务器。请编辑插件目录下的 stdio-mcp.json（可参考 stdio-mcp.example.json）后重启酒馆。',
+      );
+    }
+    const settings = this.settingsStore.load();
+    const existingUrls = new Set(settings.mcpServers.map(item => item.url));
+    const added: McpServerConfig[] = [];
+    let skipped = 0;
+    for (const entry of remote) {
+      const item = entry as { description?: unknown; id?: unknown; name?: unknown };
+      if (typeof item.id !== 'string' || !item.id) continue;
+      const url = stdioBridgeUrl(item.id);
+      if (existingUrls.has(url)) {
+        skipped += 1;
+        continue;
+      }
+      const normalized = normalizeMcpServer({
+        enabled: true,
+        // 继承导入时用的 Authorization：否则新条目一连上就被 basicAuthMode 挡住。
+        headers: authorization ? [{ name: authorization.name, value: authorization.value }] : [],
+        id: `mcp-stdio-${item.id}`.slice(0, 32),
+        name: typeof item.name === 'string' && item.name.trim() ? item.name : item.id,
+        transport: 'stdio',
+        url,
+      });
+      if (!normalized) continue;
+      existingUrls.add(normalized.url);
+      added.push(normalized);
+    }
+    if (added.length === 0) return { added: 0, skipped };
+    settings.mcpServers = [...settings.mcpServers, ...added];
+    await this.settingsStore.save(settings);
+    this.mcpManager.configure(settings.mcpServers);
+    this.reloadSettingsState();
+    await this.run(async () => {
+      await this.mcpManager.refresh(added.map(item => item.id));
+      this.reloadSettingsState();
+      await this.refreshSessionMcpTools();
+    });
+    return { added: added.length, skipped };
+  }
+
+  async removeMcpServer(id: string): Promise<void> {
+    const settings = this.settingsStore.load();
+    const next = settings.mcpServers.filter(item => item.id !== id);
+    if (next.length === settings.mcpServers.length) throw new Error(`MCP 服务器不存在：${id}`);
+    settings.mcpServers = next;
+    await this.settingsStore.save(settings);
+    this.mcpManager.configure(next);
+    this.reloadSettingsState();
+    await this.run(() => this.refreshSessionMcpTools());
+  }
+
+  /** 重新连接指定服务器（省略 id 表示全部），并让空闲会话用上新工具列表。 */
+  async refreshMcpServer(id?: string): Promise<void> {
+    await this.run(async () => {
+      this.mcpManager.configure(this.settingsStore.load().mcpServers);
+      await this.mcpManager.refresh(id ? [id] : undefined);
+      this.reloadSettingsState();
+      await this.refreshSessionMcpTools();
+    });
+  }
+
+  /** 工具列表变化只影响尚未运行的空闲会话；运行中的轮次保持当前工具。 */
+  private async refreshSessionMcpTools(): Promise<void> {
+    for (const service of this.services.values()) {
+      try {
+        await service.refreshExternalTools();
+      } catch (error) {
+        this.addDebug('warn', `刷新会话MCP工具失败：${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+  }
+
   destroy(): void {
+    this.mcpManager.dispose();
     if (this.browserRecords instanceof BufferedSessionRecordStore) this.browserRecords.dispose();
     this.localSessions?.dispose();
     this.resolveToolConfirmation(false, this.toolConfirmationResolve?.sessionId);
@@ -2361,6 +2546,9 @@ export class DreamCardAgentRuntime {
     this.state.floatingButtonAnchor = settings.floatingButtonAnchor;
     this.state.floatingButtonOffset = settings.floatingButtonOffset;
     this.state.onboardingDone = settings.onboardingDone;
+    this.state.mcpServers = settings.mcpServers;
+    this.mcpManager.configure(settings.mcpServers);
+    this.state.mcpStatuses = this.mcpManager.statuses();
     this.state.providers = settings.providers;
     this.state.presetProfiles = settings.presetProfiles;
     this.state.sendWithCtrlEnter = settings.sendWithCtrlEnter;

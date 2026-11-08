@@ -30,8 +30,8 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import type { ToolConfirmation } from '../../../core/runner/tools';
-import { useDreamCardAgent } from '../../composables/runtime';
 import type { OperationDiffFocus } from '../../composables/operation-diff';
+import { useDreamCardAgent } from '../../composables/runtime';
 import { buildTimelineBlocks, defaultRunCollapsed, type RunTimelineBlock } from '../../composables/timeline';
 import FailureCard from './timeline/FailureCard.vue';
 import OperationDiffCard from './timeline/OperationDiffCard.vue';
@@ -135,7 +135,14 @@ function jumpToLatest() {
 }
 
 function handleTimelineScroll() {
-  followTimelineTail.value = isTimelineNearTail();
+  const nearTail = isTimelineNearTail();
+  followTimelineTail.value = nearTail;
+  // 内容增长时 ResizeObserver 会排队一帧「贴底」。用户一旦主动离开底部，
+  // 必须立刻取消排队中的那帧，否则滚动会被拽回去（表现为「滚不下去」）。
+  if (!nearTail && timelineFrame !== undefined) {
+    cancelAnimationFrame(timelineFrame);
+    timelineFrame = undefined;
+  }
 }
 
 function scheduleTimelineTail() {
@@ -189,6 +196,9 @@ function toggleRunBlock(block: RunTimelineBlock) {
   min-height: 10rem;
   overflow: auto;
   overflow-anchor: none;
+  /* 滚到边界时不要把滚轮继续传给酒馆宿主页面，否则表现为「时间线不动、整页在滚」。 */
+  overscroll-behavior: contain;
+  touch-action: pan-y;
   padding: 0.75rem 0.75rem 0.35rem;
   scrollbar-gutter: stable;
 }

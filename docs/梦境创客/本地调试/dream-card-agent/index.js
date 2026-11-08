@@ -4,23 +4,28 @@
 //       让梦境创客的本地调试入口无需再另起 http-server、也无需 CORS。
 //
 // 挂载点：/api/plugins/dream-card-agent
-//   GET /status                      健康探测
-//   GET /dist/<仓库内相对路径>        静态文件（正确的 MIME + 禁用缓存）
+//   GET  /status                       健康探测
+//   GET  /dist/<仓库内相对路径>         静态文件（正确的 MIME + 禁用缓存）
+//   POST /mcp-stdio/<id>               stdio MCP 的 JSON-RPC 桥（见 stdio-mcp.js）
+//   GET  /mcp-stdio/servers            可用 stdio MCP 服务器清单
+//   GET  /mcp-stdio/<id>/status        单台服务器运行状态
+//   POST /mcp-stdio/<id>/restart       重启子进程
 //
 // 依赖：plugins/package.json 声明 type=commonjs，因此这里可直接用 require。
-// 注意：只读服务，不提供任何写入接口。
+// 注意：dist 部分只读；mcp-stdio 只能调用 stdio-mcp.json 里已声明的命令。
 
 'use strict';
 
 const fs = require('fs');
 const path = require('path');
 const express = require('express');
+const { attachStdioBridge } = require('./stdio-mcp');
 
 const info = {
     id: 'dream-card-agent',
     name: 'Dream Card Agent Dev Server',
-    description: 'Serves the SleepTavernHome build output (dist) to SillyTavern for local development.',
-    version: '1.0.0',
+    description: 'Serves the SleepTavernHome build output (dist) and bridges stdio MCP servers for SillyTavern.',
+    version: '1.1.0',
 };
 
 // 资源目录解析优先级：
@@ -62,6 +67,18 @@ function countFiles(dir) {
 
 async function init(router) {
     const exists = fs.existsSync(DIST_DIR);
+    // 自己解析 JSON，不依赖酒馆是否在插件路由前挂了 body parser；
+    // body-parser 检测到 req._body 已解析会自动跳过，重复挂载安全。
+    router.use('/mcp-stdio', express.json({ limit: '4mb', strict: false, type: '*/*' }));
+    // stdio MCP 桥：浏览器起不了子进程，由这里托管并在同源提供 HTTP 端点。
+    const stdioBridge = attachStdioBridge(router);
+    // 错误中间件必须注册在路由之后才能接住它们的异常。
+    router.use('/mcp-stdio', (err, _req, res, _next) => {
+        const status = Number.isInteger(err && err.status) ? err.status : 400;
+        res
+            .status(status)
+            .json({ error: { code: -32700, message: '无法解析请求体：' + (err && err.message) }, jsonrpc: '2.0' });
+    });
 
     // 健康探测：供启动器或人工排查使用
     router.get('/status', (_req, res) => {
@@ -70,6 +87,10 @@ async function init(router) {
             distDir: DIST_DIR,
             source: DIST_SOURCE,
             files: exists ? countFiles(DIST_DIR) : 0,
+            stdioMcp: stdioBridge.statuses().map(item => ({
+                id: item.id,
+                running: item.running,
+            })),
             version: info.version,
         });
     });
@@ -107,10 +128,21 @@ async function init(router) {
             ? '[dream-card-agent] 已挂载 dist 静态服务（' + DIST_SOURCE + '）：' + DIST_DIR
             : '[dream-card-agent] 警告：dist 目录不存在，请先构建仓库 —— ' + DIST_DIR,
     );
+
+    exit.handlers.push(() => stdioBridge.dispose());
 }
 
 async function exit() {
-    // 只读服务，无需清理
+    // 关闭所有 stdio MCP 子进程，避免酒馆退出后留下孤儿进程
+    for (const dispose of exit.handlers.splice(0)) {
+        try {
+            dispose();
+        } catch (error) {
+            console.warn('[dream-card-agent] 清理失败:', error && error.message);
+        }
+    }
 }
+
+exit.handlers = [];
 
 module.exports = { init, exit, info };

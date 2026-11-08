@@ -24,6 +24,7 @@
         <PresetSettings v-else-if="settingsSection === 'preset'" />
         <ApiSettings v-else-if="settingsSection === 'api'" />
         <SkillSettings v-else-if="settingsSection === 'skills'" />
+        <McpSettings v-else-if="settingsSection === 'mcp'" />
         <ResourceDownloadSettings v-else-if="settingsSection === 'resources'" />
         <StorageSettings v-else-if="settingsSection === 'storage'" />
         <DiagnosticsSettings v-else-if="settingsSection === 'diagnostics'" />
@@ -37,10 +38,11 @@
 import { defineAsyncComponent, ref } from 'vue';
 import { useElementWidth } from '../../composables/element-width';
 import { useDreamCardAgent, type SettingsSection } from '../../composables/runtime';
-import ApiSettings from './ApiSettings.vue';
 import AgentSettings from './AgentSettings.vue';
+import ApiSettings from './ApiSettings.vue';
 import DiagnosticsSettings from './DiagnosticsSettings.vue';
 import GeneralSettings from './GeneralSettings.vue';
+import McpSettings from './McpSettings.vue';
 import PresetSettings from './PresetSettings.vue';
 import ResourceDownloadSettings from './ResourceDownloadSettings.vue';
 import SkillSettings from './SkillSettings.vue';
@@ -62,6 +64,7 @@ const navItems: { icon: string; label: string; section: SettingsSection }[] = [
   { icon: 'fa-solid fa-robot', label: 'Agent配置', section: 'agent' },
   { icon: 'fa-solid fa-layer-group', label: '预设', section: 'preset' },
   { icon: 'fa-solid fa-wand-magic-sparkles', label: 'Skill', section: 'skills' },
+  { icon: 'fa-solid fa-network-wired', label: 'MCP', section: 'mcp' },
   { icon: 'fa-solid fa-cloud-arrow-down', label: '资源下载', section: 'resources' },
   { icon: 'fa-solid fa-hard-drive', label: '文件与存储', section: 'storage' },
   { icon: 'fa-solid fa-stethoscope', label: '诊断', section: 'diagnostics' },

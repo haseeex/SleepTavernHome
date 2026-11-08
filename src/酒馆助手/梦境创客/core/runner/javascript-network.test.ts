@@ -80,4 +80,26 @@ describe('JavaScript network permissions', () => {
     await expect(broker.request({ url })).rejects.toThrow();
     expect(fetch).not.toHaveBeenCalled();
   });
+  it('未注入 fetch 时以 globalThis 为接收者调用', async () => {
+    // 浏览器的 fetch 是 window 的方法，脱离接收者调用会报 Illegal invocation。
+    const original = globalThis.fetch;
+    const receivers: unknown[] = [];
+    globalThis.fetch = function (this: unknown) {
+      receivers.push(this);
+      return Promise.resolve(new Response('ok', { status: 200 }));
+    } as typeof fetch;
+    try {
+      const broker = createJavascriptNetwork({
+        allowNetwork: true,
+        approvalMode: () => 'full',
+        baseUrl: 'https://tavern.example/',
+        signal: new AbortController().signal,
+        toolCallId: 'js-receiver',
+      });
+      await broker.request({ url: '/data' });
+      expect(receivers).toEqual([globalThis]);
+    } finally {
+      globalThis.fetch = original;
+    }
+  });
 });

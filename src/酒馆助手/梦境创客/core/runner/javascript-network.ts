@@ -91,7 +91,9 @@ export function createJavascriptNetwork(options: JavascriptNetworkOptions) {
         );
       }
       options.signal.throwIfAborted();
-      const response = await (options.fetch ?? fetch)(url.href, {
+      // 浏览器的 fetch 必须带正确接收者：存成变量或写在括号里再调用会报 Illegal invocation。
+      const send = options.fetch ?? ((input: RequestInfo | URL, init?: RequestInit) => globalThis.fetch(input, init));
+      const response = await send(url.href, {
         method,
         headers,
         body: input.body,
